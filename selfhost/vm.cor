@@ -164,6 +164,7 @@ craft install_builtins() {
   shove(globals, ["hear", ["blt", "hear"]])
   shove(globals, ["read", ["blt", "read"]])
   shove(globals, ["readlines", ["blt", "readlines"]])
+  shove(globals, ["file_exists", ["blt", "file_exists"]])
   shove(globals, ["flaw", ["blt", "flaw"]])
   shove(globals, ["shove", ["blt", "shove"]])
   shove(globals, ["yank", ["blt", "yank"]])
@@ -287,6 +288,7 @@ craft call_builtin(name, args) {
   else when name == "yank" { return yank(args[0]) }
   else when name == "read" { return read(args[0]) }
   else when name == "readlines" { return readlines(args[0]) }
+  else when name == "file_exists" { return file_exists(args[0]) }
   else when name == "flaw" { flaw(args[0]); return nil }
   else when name == "vouch" { vouch(args[0], args[1]); return nil }
   else when name == "mcall" { return mcall(args[0], args[1], args[2]) }
@@ -325,12 +327,17 @@ craft do_call(argc) {
     // trunc_base (the callee position), removing the callee itself.
     shove(frames, [fid, 0, callee_idx + 1, callee_idx, [], upvals])
   } else when nature(callee) == "list" && size(callee) == 3 && callee[0] == "method" {
+    // Route through the Corros-written standard library ($method from
+    // lib/prelude.cor): $method(recv, name, [args]).
     forge args = []
     forge i = callee_idx + 1
     whilst i < size(stack) { shove(args, stack[i]); i = i + 1 }
-    forge result = mcall(callee[1], callee[2], args)
     whilst size(stack) > callee_idx { yank(stack) }
-    shove(stack, result)
+    shove(stack, global_get("$method"))
+    shove(stack, callee[2])
+    shove(stack, callee[1])
+    shove(stack, args)
+    do_call(3)
   } else when nature(callee) == "list" && size(callee) == 2 && callee[0] == "blt" {
     forge args = []
     forge i = callee_idx + 1

@@ -18,7 +18,7 @@
 
 craft is_digit(c) { return c >= "0" && c <= "9" }
 craft is_alpha(c) {
-  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"
+  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_" || c == "$"
 }
 craft is_alnum(c) { return is_digit(c) || is_alpha(c) }
 craft is_ws(c) {
@@ -942,6 +942,24 @@ craft print_bytecode() {
 forge main_path = args[0]
 base_dir = base_of(main_path)
 tokens = lex(read(main_path))
+
+// Splice the prelude (the standard library, written in Corros) in front of
+// the source, exactly as the Rust loader does — required for byte-identical
+// output, since method calls desugar to $method.
+forge prelude_text = ""
+when file_exists("lib/prelude.cor") { prelude_text = read("lib/prelude.cor") }
+else when file_exists("../lib/prelude.cor") { prelude_text = read("../lib/prelude.cor") }
+when prelude_text != "" {
+  forge pre = lex(prelude_text)
+  yank(pre) // drop the prelude's eof
+  forge new_tokens = []
+  forge pi = 0
+  whilst pi < size(pre) { shove(new_tokens, pre[pi]); pi = pi + 1 }
+  pi = 0
+  whilst pi < size(tokens) { shove(new_tokens, tokens[pi]); pi = pi + 1 }
+  tokens = new_tokens
+}
+
 pos = 0
 fn_index = 1 // the script is function 0, so the first craft is 1
 codes = []

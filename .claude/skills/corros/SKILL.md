@@ -18,6 +18,10 @@ and a self-hosting milestone (a compiler and VM for Corros written in Corros und
 ## Build & run
 
 ```bash
+# one-line install (prebuilt binary from GitHub releases)
+curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | sh
+
+# or from source
 cd /path/to/corros
 cargo build --release                      # plain build works
 cargo build --release && cp target/release/corros /usr/local/bin/corros   # make it a command
@@ -26,8 +30,13 @@ corros hello.cor                    # run a file
 corros hello.cor one two            # pass args (visible as the `args` list)
 corros                             # interactive REPL (echoes non-nil results)
 corros --dump hello.cor            # print compiled bytecode
+corros --run-bc file.bc            # run compiled bytecode natively (self-hosting)
 corros -v                          # version
 ```
+
+Note: the installed `corros` needs `prelude.cor` next to the binary — the
+installer places both in the same directory. Without it, method calls fail
+with "undefined variable '$method'".
 
 Exit codes: 65 = compile error, 70 = runtime error. The REPL wraps input in
 `speak((...))`, so expressions echo their value (assignment included).
@@ -184,6 +193,14 @@ implementation, and the compiler is a fixed point under its own compilation.
 (Note: `compiler.cor`'s own implementation stays in a deliberate subset — no
 closures/maps/methods in ITS source — so self-compilation only exercises
 constructs that were already proven correct. `vm.cor` uses the full language.)
+
+The standard library is Corros too: `lib/prelude.cor` is spliced in front of
+every program, and method calls route through its `$method` dispatcher, so
+list/string methods (`shove`, `yank`, `size`, `holds`, `flip`, `clear`,
+`weld`, `split`, `opens`, `closes`, `reforge`) are implemented in Corros. The
+Rust VM falls back to its native method table only when the prelude is absent
+or a method needs host primitives (`mcall`). `$method(recv, name, [args])` is
+the signature; `mcall(name, recv, args)` is the native fallback bridge.
 
 ## Gotchas (important — these bite)
 

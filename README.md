@@ -71,9 +71,19 @@ keep going **onward**.
   detection.
 - **Clean, dependency-free Rust** — one crate, zero external dependencies.
 
-## Quick start
+## Install (one line)
 
-Requires Rust (1.70+).
+```bash
+curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | sh
+```
+
+The installer downloads a prebuilt binary from the latest GitHub release
+(Linux, macOS, Windows — x86_64 and ARM64); if none exists for your platform
+it falls back to building from source. Both the binary and the Corros-written
+standard library (`prelude.cor`) are installed, so `corros` works from
+anywhere.
+
+**From source** (requires Rust 1.70+):
 
 ```bash
 cargo build --release
@@ -146,6 +156,17 @@ To make the deep chain fast, the compiled VM and compiled compiler can run
 natively on the host engine (`corros --run-bc file.bc`) — a normal feature,
 since they are ordinary Corros programs.
 
+### The standard library is Corros too
+
+`lib/prelude.cor` is the standard library, **written in Corros**. It is
+spliced in front of every program, and method calls (`xs.shove(1)`,
+`s.split(",")`) route through its `$method` dispatcher — so `shove`, `yank`,
+`size`, `holds`, `flip`, `clear`, `weld`, `split`, `opens`, `closes`, and
+`reforge` are implemented in the language itself, with a native fallback only
+where Corros needs host primitives (case conversion, trimming, map
+internals). What's left of Rust is the bootstrap seed — the same role `rustc`
+plays for Rust.
+
 | crate module | job |
 | ------------ | --- |
 | `src/lexer.rs`   | character scanner → tokens (numbers, strings, operators, Corros keywords) |
@@ -192,7 +213,9 @@ since they are ordinary Corros programs.
 - [x] **The full interpreter rewritten in Corros and bootstrapped from source** —
       `selfhost/compiler.cor` + `selfhost/vm.cor` compile and run the entire
       language, byte-identical to the Rust implementation (`bash selfhost/demo.sh`)
-- [ ] A standard library written in Corros itself
+- [x] **A standard library written in Corros itself** — `lib/prelude.cor`
+      implements the list and string methods in Corros, with native fallbacks
+      only where host primitives are required
 - [ ] Performance: register-based VM, JIT, or native compilation
 
 ## Contributing

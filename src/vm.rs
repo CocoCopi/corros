@@ -487,6 +487,17 @@ impl VM {
             Value::NativeMethod { receiver, method } => {
                 let mut popped = self.stack.split_off(callee_idx);
                 popped.remove(0);
+                // Route through the Corros-written standard library ($method
+                // from lib/prelude.cor) when it is loaded, so methods are
+                // implemented in Corros itself. Without the prelude (e.g.
+                // pre-compiled bytecode), fall back to the native method.
+                if let Some(mv) = self.globals.get("$method").cloned() {
+                    self.push(mv);
+                    self.push(*receiver);
+                    self.push(Value::str(method.name.to_string()));
+                    self.push(Value::List(Rc::new(RefCell::new(popped))));
+                    return self.call(3, line);
+                }
                 match (method.call)(&receiver, &popped) {
                     Ok(v) => self.push(v),
                     Err(e) => return Err(self.runtime_error(e.message, line)),

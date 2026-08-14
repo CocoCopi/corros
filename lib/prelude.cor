@@ -1,0 +1,139 @@
+// lib/prelude.cor — the Corros standard library, written in Corros.
+//
+// Every program is compiled with this file spliced in front of it, and method
+// calls (`xs.shove(1)`) desugar to `$method(xs, "shove", [1])`, so the
+// everyday list and string operations are implemented in Corros itself. The
+// few operations Corros cannot express without host primitives (case
+// conversion, trimming, map internals, insertion-sort edge cases) fall back to
+// the native method table via `mcall`.
+//
+// This file must stay method-free (no `x.m(...)` calls inside it), so both the
+// Rust compiler and the self-hosted compiler.cor can compile it.
+
+// --- string helpers -------------------------------------------------------
+
+craft $slice(s, a, b) {
+  forge out = ""
+  forge i = a
+  whilst i < b {
+    out = out + s[i]
+    i = i + 1
+  }
+  return out
+}
+
+craft $str_holds(s, sub) {
+  when sub == "" { return true }
+  when size(sub) > size(s) { return false }
+  forge i = 0
+  whilst i + size(sub) <= size(s) {
+    when $slice(s, i, i + size(sub)) == sub { return true }
+    i = i + 1
+  }
+  return false
+}
+
+craft $str_opens(s, prefix) {
+  when size(prefix) > size(s) { return false }
+  return $slice(s, 0, size(prefix)) == prefix
+}
+
+craft $str_closes(s, suffix) {
+  when size(suffix) > size(s) { return false }
+  return $slice(s, size(s) - size(suffix), size(s)) == suffix
+}
+
+craft $str_split(s, sep) {
+  // An empty separator falls back to the native split (Rust str::split),
+  // which yields the individual characters — Corros cannot match that with a
+  // simple scan loop.
+  when sep == "" { return mcall("split", s, [sep]) }
+  forge out = []
+  forge acc = ""
+  forge i = 0
+  whilst i < size(s) {
+    when s[i] == sep {
+      shove(out, acc)
+      acc = ""
+    } else {
+      acc = acc + s[i]
+    }
+    i = i + 1
+  }
+  shove(out, acc)
+  return out
+}
+
+craft $str_reforge(s, from, to) {
+  when from == "" { return mcall("reforge", s, [from, to]) }
+  return $list_weld($str_split(s, from), to)
+}
+
+// --- list helpers ---------------------------------------------------------
+
+craft $list_holds(xs, v) {
+  forge i = 0
+  whilst i < size(xs) {
+    when xs[i] == v { return true }
+    i = i + 1
+  }
+  return false
+}
+
+craft $list_flip(xs) {
+  forge i = 0
+  whilst i < size(xs) / 2 {
+    forge j = size(xs) - 1 - i
+    forge tmp = xs[i]
+    xs[i] = xs[j]
+    xs[j] = tmp
+    i = i + 1
+  }
+  return nil
+}
+
+craft $list_clear(xs) {
+  whilst size(xs) > 0 { yank(xs) }
+  return nil
+}
+
+craft $list_weld(xs, sep) {
+  when nature(sep) != "string" {
+    flaw("weld expects a string separator, got " + nature(sep))
+  }
+  when size(xs) == 0 { return "" }
+  forge out = str(xs[0])
+  forge i = 1
+  whilst i < size(xs) {
+    out = out + sep + str(xs[i])
+    i = i + 1
+  }
+  return out
+}
+
+// --- method dispatch ------------------------------------------------------
+//
+// `recv.name(args...)` compiles to `$method(recv, "name", [args...])`.
+
+craft $method(recv, name, args) {
+  forge t = nature(recv)
+  when t == "list" {
+    when name == "shove" { shove(recv, args[0]); return nil }
+    else when name == "yank" { return yank(recv) }
+    else when name == "size" { return size(recv) }
+    else when name == "holds" { return $list_holds(recv, args[0]) }
+    else when name == "flip" { return $list_flip(recv) }
+    else when name == "clear" { return $list_clear(recv) }
+    else when name == "weld" { return $list_weld(recv, args[0]) }
+    else { return mcall(name, recv, args) }
+  } else when t == "string" {
+    when name == "size" { return size(recv) }
+    else when name == "holds" { return $str_holds(recv, args[0]) }
+    else when name == "opens" { return $str_opens(recv, args[0]) }
+    else when name == "closes" { return $str_closes(recv, args[0]) }
+    else when name == "split" { return $str_split(recv, args[0]) }
+    else when name == "reforge" { return $str_reforge(recv, args[0], args[1]) }
+    else { return mcall(name, recv, args) }
+  }
+  return mcall(name, recv, args)
+}

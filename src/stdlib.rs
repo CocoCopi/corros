@@ -34,8 +34,10 @@ pub static BUILTINS: &[(&str, NativeFn)] = &[
     ("readlines", native_readlines),
     ("shove", native_shove),
     ("yank", native_yank),
+    ("file_exists", native_file_exists),
     // Method bridge: dispatches to the same method table the VM uses, so the
-    // self-hosted VM can implement GET_FIELD/CALL with zero drift.
+    // self-hosted VM (and the Corros standard library's fallback path) can
+    // implement GET_FIELD/CALL with zero drift.
     ("mcall", native_mcall),
 ];
 
@@ -304,6 +306,12 @@ fn native_yank(_vm: &mut VM, args: &[Value]) -> RuntimeResult<Value> {
         .borrow_mut()
         .pop()
         .ok_or_else(|| err("yank: the list is empty"))
+}
+
+fn native_file_exists(_vm: &mut VM, args: &[Value]) -> RuntimeResult<Value> {
+    expect_args("file_exists", args, 1)?;
+    let path = want_str("file_exists", &args[0])?;
+    Ok(Value::Bool(std::path::Path::new(&path).exists()))
 }
 
 // mcall("method_name", receiver, [arg, ...]) — calls a method on the receiver

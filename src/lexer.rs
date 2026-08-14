@@ -209,7 +209,7 @@ impl<'a> Lexer<'a> {
         let c = self.peek().expect("scan_token called at end");
         match c {
             c if c.is_ascii_digit() => self.number(),
-            c if c.is_alphabetic() || c == '_' => self.identifier(),
+            c if c.is_alphabetic() || c == '_' || c == '$' => self.identifier(),
             '"' => self.string(),
             '(' => {
                 self.advance();
@@ -416,7 +416,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn identifier(&mut self) -> CompileResult<TokenKind> {
-        while matches!(self.peek(), Some(c) if c.is_alphanumeric() || c == '_') {
+        while matches!(self.peek(), Some(c) if c.is_alphanumeric() || c == '_' || c == '$') {
             self.advance();
         }
         let text: String = self.chars[self.token_start..self.pos].iter().collect();
@@ -564,9 +564,16 @@ mod tests {
 
     #[test]
     fn unexpected_character() {
-        let err = lex("let $ = 1", "test.cor").unwrap_err();
+        let err = lex("let @ = 1", "test.cor").unwrap_err();
         assert!(err.message.contains("unexpected character"));
         assert_eq!(err.line, 1);
+    }
+
+    #[test]
+    fn dollar_is_a_valid_identifier_char() {
+        let toks = kinds("$method = 1; forge $$ = 2;");
+        assert!(toks.contains(&TokenKind::Identifier("$method".to_string())));
+        assert!(toks.contains(&TokenKind::Identifier("$$".to_string())));
     }
 
     #[test]

@@ -12,7 +12,9 @@ use crate::lexer::{lex, Token, TokenKind};
 /// Read, lex, and preprocess a main program file.
 pub fn load_program(path: &str, sources: &mut SourceMap) -> CompileResult<Vec<Token>> {
     let mut stack: Vec<String> = Vec::new();
-    load_file(path, sources, &mut stack)
+    let mut tokens = load_file(path, sources, &mut stack)?;
+    prepend_prelude(&mut tokens, sources)?;
+    Ok(tokens)
 }
 
 /// Lex a source string (used by the REPL and tests) and splice includes
@@ -27,7 +29,57 @@ pub fn preprocess(
     let mut tokens = lex(source, file)?;
     let mut stack: Vec<String> = Vec::new();
     splice_includes(&mut tokens, base_dir, sources, &mut stack)?;
+    prepend_prelude(&mut tokens, sources)?;
     Ok(tokens)
+}
+
+// ---------------------------------------------------------------------------
+// The prelude: the standard library written in Corros (lib/prelude.cor).
+// It is spliced in front of every program so method calls — which desugar to
+// `$method(recv, name, args)` — are implemented in Corros itself.
+// ---------------------------------------------------------------------------
+
+/// Locate the prelude source. Search order: $CORROS_PRELUDE, the directory
+/// next to the running binary, `../lib` from it, the working directory, and
+/// the crate directory (development/tests). Returns `None` when not found,
+/// in which case programs compile without the prelude (method calls then fail
+/// at runtime with "undefined variable '$method'").
+fn read_prelude() -> Option<String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("CORROS_PRELUDE") {
+        candidates.push(PathBuf::from(p));
+    }
+    if let Some(dir) = &exe_dir {
+        candidates.push(dir.join("prelude.cor"));
+        candidates.push(dir.join("..").join("lib").join("prelude.cor"));
+    }
+    candidates.push(Path::new("lib/prelude.cor").to_path_buf());
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("lib/prelude.cor"));
+    for path in candidates {
+        if let Ok(source) = std::fs::read_to_string(&path) {
+            return Some(source);
+        }
+    }
+    None
+}
+
+fn prepend_prelude(tokens: &mut Vec<Token>, sources: &mut SourceMap) -> CompileResult<()> {
+    let source = match read_prelude() {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    sources.insert("<prelude>".to_string(), source.clone());
+    let mut pre = lex(&source, "<prelude>")?;
+    // Drop the prelude's own Eof token; the program's Eof still ends the file.
+    if pre.last().map(|t| t.kind == TokenKind::Eof).unwrap_or(false) {
+        pre.pop();
+    }
+    pre.append(tokens);
+    *tokens = pre;
+    Ok(())
 }
 
 fn load_file(path: &str, sources: &mut SourceMap, stack: &mut Vec<String>) -> CompileResult<Vec<Token>> {
