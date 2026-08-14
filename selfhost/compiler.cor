@@ -1,0 +1,967 @@
+// compiler.cor — the Corros compiler, written in Corros.
+//
+// This is the self-hosting milestone, the way Rust was written in Rust: a
+// compiler for Corros that is itself written in Corros. It compiles the FULL
+// language — closures with upvalues, maps, ranges, method calls, power,
+// compound and indexed assignment, `adopt` modules — into the same
+// stack-machine bytecode the Rust implementation emits, printed as text:
+//   corros selfhost/compiler.cor <program.cor>   (prints bytecode)
+//
+// Its own implementation stays in a strict subset (no closures, maps, ranges,
+// or method calls in THIS file), so compiling itself exercises only the
+// constructs that were already proven correct:
+//   corros selfhost/compiler.cor selfhost/compiler.cor > /tmp/self.bc
+
+// ---------------------------------------------------------------------------
+// Lexer
+// ---------------------------------------------------------------------------
+
+craft is_digit(c) { return c >= "0" && c <= "9" }
+craft is_alpha(c) {
+  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"
+}
+craft is_alnum(c) { return is_digit(c) || is_alpha(c) }
+craft is_ws(c) {
+  return c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+craft keyword(k) {
+  when k == "forge" { return "forge" }
+  else when k == "craft" { return "craft" }
+  else when k == "when" { return "when" }
+  else when k == "else" { return "else" }
+  else when k == "whilst" { return "whilst" }
+  else when k == "each" { return "each" }
+  else when k == "in" { return "in" }
+  else when k == "return" { return "return" }
+  else when k == "break" { return "break" }
+  else when k == "onward" { return "onward" }
+  else when k == "true" { return "true" }
+  else when k == "false" { return "false" }
+  else when k == "nil" { return "nil" }
+  else when k == "adopt" { return "adopt" }
+  return ""
+}
+
+craft slice(s, a, b) {
+  forge out = ""
+  forge i = a
+  whilst i < b {
+    out = out + s[i]
+    i = i + 1
+  }
+  return out
+}
+
+// Tokens are [kind, lexeme, line]. Keywords and operators use their own text
+// as the kind; literals use "num", "str", "ident", and the end is "eof".
+craft lex(src) {
+  forge tokens = []
+  forge i = 0
+  forge n = size(src)
+  forge line = 1
+  whilst i < n {
+    forge c = src[i]
+    when is_ws(c) {
+      when c == "\n" { line = line + 1 }
+      i = i + 1
+    } else when c == "/" && i + 1 < n && src[i + 1] == "/" {
+      whilst i < n && src[i] != "\n" { i = i + 1 }
+    } else when c == "/" && i + 1 < n && src[i + 1] == "*" {
+      i = i + 2
+      whilst i < n && !(src[i] == "*" && i + 1 < n && src[i + 1] == "/") {
+        when src[i] == "\n" { line = line + 1 }
+        i = i + 1
+      }
+      i = i + 2
+    } else when is_digit(c) {
+      forge start = i
+      whilst i < n && is_digit(src[i]) { i = i + 1 }
+      when i + 1 < n && src[i] == "." && is_digit(src[i + 1]) {
+        i = i + 1
+        whilst i < n && is_digit(src[i]) { i = i + 1 }
+      }
+      shove(tokens, ["num", slice(src, start, i), line])
+    } else when is_alpha(c) {
+      forge start = i
+      whilst i < n && is_alnum(src[i]) { i = i + 1 }
+      forge word = slice(src, start, i)
+      forge k = keyword(word)
+      when k == "" { shove(tokens, ["ident", word, line]) }
+      else { shove(tokens, [k, word, line]) }
+    } else when c == "\"" {
+      i = i + 1
+      forge text = ""
+      whilst i < n && src[i] != "\"" {
+        when src[i] == "\\" && i + 1 < n {
+          i = i + 1
+          forge e = src[i]
+          when e == "n" { text = text + "\n" }
+          else when e == "t" { text = text + "\t" }
+          else when e == "r" { text = text + "\r" }
+          else when e == "\\" { text = text + "\\" }
+          else when e == "\"" { text = text + "\"" }
+          else when e == "'" { text = text + "'" }
+          else { text = text + e }
+          i = i + 1
+        } else {
+          text = text + src[i]
+          i = i + 1
+        }
+      }
+      i = i + 1
+      shove(tokens, ["str", text, line])
+    } else {
+      when i + 2 < n {
+        forge three = c + src[i + 1] + src[i + 2]
+        when three == "**=" || three == "..=" {
+          shove(tokens, [three, three, line])
+          i = i + 3
+        } else {
+          when i + 1 < n {
+            forge two = c + src[i + 1]
+            when two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "+=" || two == "-=" || two == "*=" || two == "/=" || two == "%=" || two == "**" || two == ".." {
+              shove(tokens, [two, two, line])
+              i = i + 2
+            } else {
+              shove(tokens, [c, c, line])
+              i = i + 1
+            }
+          } else {
+            shove(tokens, [c, c, line])
+            i = i + 1
+          }
+        }
+      } else {
+        when i + 1 < n {
+          forge two = c + src[i + 1]
+          when two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||" || two == "+=" || two == "-=" || two == "*=" || two == "/=" || two == "%=" || two == "**" || two == ".." {
+            shove(tokens, [two, two, line])
+            i = i + 2
+          } else {
+            shove(tokens, [c, c, line])
+            i = i + 1
+          }
+        } else {
+          shove(tokens, [c, c, line])
+          i = i + 1
+        }
+      }
+    }
+  }
+  shove(tokens, ["eof", "", line])
+  return tokens
+}
+
+// ---------------------------------------------------------------------------
+// Compiler
+// ---------------------------------------------------------------------------
+
+// Global compiler state (this file stays in the subset: no closures or maps).
+tokens = []
+pos = 0
+code = []          // the function currently being compiled
+codes = []         // every function's code; index = function id
+fn_names = []
+fn_arities = []
+fn_stack = []      // enclosing frames: [code, locals, upvalues, depth, loops, in_fn]
+fn_index = 0
+locals = []        // [name, scope_depth, is_captured]
+upvalues = []      // [name, is_local, index]
+scope_depth = 0
+loops = []         // [continue_target_or_nil, breaks, onwards, scope_depth]
+in_function = false
+mute = false       // when true, emit() is a no-op (lvalue key scanning)
+adopted = []       // files already adopted (cycle detection)
+base_dir = ""      // directory of the main file (adopt resolves relative to it)
+
+craft cur() { return tokens[pos] }
+craft at_end() { return cur()[0] == "eof" }
+craft advance() { pos = pos + 1 }
+craft check(k) { return cur()[0] == k }
+craft match_k(k) {
+  when check(k) { advance(); return true }
+  return false
+}
+craft expect(k, msg) {
+  when check(k) { advance(); return true }
+  flaw(msg + " at line " + str(cur()[2]))
+  return false
+}
+craft expect_ident(msg) {
+  when check("ident") {
+    forge name = cur()[1]
+    advance()
+    return name
+  }
+  flaw(msg + " at line " + str(cur()[2]))
+  return ""
+}
+
+// --- emission ---
+craft emit(e) {
+  when !mute { shove(code, e) }
+}
+craft emit_jump() {
+  forge idx = size(code)
+  emit(["JUMP", 0])
+  return idx
+}
+craft emit_jump_if_false() {
+  forge idx = size(code)
+  emit(["JUMP_IF_FALSE", 0])
+  return idx
+}
+craft patch_to(idx, target) {
+  forge op = code[idx][0]
+  code[idx] = [op, target]
+}
+craft patch(idx) { patch_to(idx, size(code)) }
+
+// --- scopes and names ---
+craft begin_scope() { scope_depth = scope_depth + 1 }
+craft end_scope() {
+  whilst size(locals) > 0 && locals[size(locals) - 1][1] == scope_depth {
+    forge rec = yank(locals)
+    when rec[2] == 1 { emit(["CLOSE_UPVALUE"]) } else { emit(["POP"]) }
+  }
+  scope_depth = scope_depth - 1
+}
+// Emit pops/closes for locals declared deeper than d (loop bodies), without
+// yanking them: the body's end_scope still owns those entries on the
+// fallthrough path.
+craft pop_above(d) {
+  forge i = size(locals) - 1
+  whilst i >= 0 && locals[i][1] > d {
+    when locals[i][2] == 1 { emit(["CLOSE_UPVALUE"]) } else { emit(["POP"]) }
+    i = i - 1
+  }
+}
+craft declare_local(name) {
+  shove(locals, [name, scope_depth, 0])
+  return size(locals) - 1
+}
+// Declare a local at an explicit depth (parameters live at depth 0 and are
+// never end_scope-popped; their values are the call arguments on the stack).
+craft declare_local_at(name, d) {
+  shove(locals, [name, d, 0])
+  return size(locals) - 1
+}
+craft resolve_local(name) {
+  forge i = size(locals) - 1
+  whilst i >= 0 {
+    when locals[i][0] == name { return i }
+    i = i - 1
+  }
+  return -1
+}
+// Find-or-add an upvalue for the current function. Desc = [name, is_local,
+// index]; two entries with the same (is_local, index) are the same upvalue.
+craft add_upvalue(desc) {
+  forge i = 0
+  whilst i < size(upvalues) {
+    when upvalues[i][1] == desc[1] && upvalues[i][2] == desc[2] { return i }
+    i = i + 1
+  }
+  shove(upvalues, desc)
+  return size(upvalues) - 1
+}
+// Look for `name` in the enclosing functions' locals and upvalues (fn_stack
+// entries 1..end; entry 0 is the script, whose names are globals).
+craft resolve_upvalue(name) {
+  forge i = size(fn_stack) - 1
+  whilst i >= 1 {
+    forge fl = fn_stack[i][1]
+    forge j = size(fl) - 1
+    whilst j >= 0 {
+      when fl[j][0] == name {
+        fl[j][2] = 1 // mark captured so end_scope emits CLOSE_UPVALUE
+        return add_upvalue([name, 1, j])
+      }
+      j = j - 1
+    }
+    forge fu = fn_stack[i][2]
+    forge k = 0
+    whilst k < size(fu) {
+      when fu[k][0] == name { return add_upvalue([name, 0, fu[k][2]]) }
+      k = k + 1
+    }
+    i = i - 1
+  }
+  return -1
+}
+craft emit_name_get(name) {
+  forge slot = resolve_local(name)
+  when slot >= 0 { emit(["GET_LOCAL", slot]) }
+  else {
+    forge up = resolve_upvalue(name)
+    when up >= 0 { emit(["GET_UPVALUE", up]) }
+    else { emit(["GET_GLOBAL", name]) }
+  }
+}
+craft emit_name_set(name) {
+  forge slot = resolve_local(name)
+  when slot >= 0 { emit(["SET_LOCAL", slot]) }
+  else {
+    forge up = resolve_upvalue(name)
+    when up >= 0 { emit(["SET_UPVALUE", up]) }
+    else { emit(["SET_GLOBAL", name]) }
+  }
+}
+
+// --- statements ---
+craft statement() {
+  when check("forge") { forge_decl() }
+  else when check("craft") { craft_decl() }
+  else when check("when") { when_stmt() }
+  else when check("whilst") { whilst_stmt() }
+  else when check("each") { each_stmt() }
+  else when check("return") { return_stmt() }
+  else when check("break") { break_stmt() }
+  else when check("onward") { onward_stmt() }
+  else when check("adopt") { adopt_stmt() }
+  else when check("{") { block() }
+  else { expr_stmt() }
+  match_k(";")
+}
+
+craft block() {
+  expect("{", "expected '{'")
+  begin_scope()
+  whilst !check("}") && !at_end() { statement() }
+  expect("}", "expected '}'")
+  end_scope()
+}
+
+craft expr_stmt() {
+  expression()
+  emit(["POP"])
+}
+
+craft forge_decl() {
+  advance() // 'forge'
+  forge name = expect_ident("expected variable name after 'forge'")
+  when match_k("=") { expression() } else { emit(["NIL"]) }
+  when !in_function {
+    emit(["DEFINE_GLOBAL", name])
+  } else {
+    declare_local(name)
+  }
+}
+
+// Compile a function body; emit its CLOSURE into the enclosing function.
+// Returns nothing (the closure instruction is emitted here). The function id
+// is assigned on COMPLETION so that codes/fn_names/fn_arities stay aligned
+// (inner functions finish before their outer, so they get lower ids).
+craft compile_craft(name, params) {
+  shove(fn_stack, [code, locals, upvalues, scope_depth, loops, in_function])
+  code = []
+  locals = []
+  upvalues = []
+  scope_depth = 0
+  loops = []
+  in_function = true
+
+  // Parameters first: they must occupy slots 0..n-1 (their values are the
+  // call arguments already on the stack), before our own bookkeeping.
+  each p in params { declare_local_at(p, 0) }
+
+  block()
+  emit(["NIL"])
+  emit(["RETURN"])
+  shove(codes, code)
+  forge fid = fn_index
+  fn_index = fn_index + 1
+  shove(fn_names, name)
+  shove(fn_arities, size(params))
+
+  // Capture the child's upvalues before restoring the parent's state.
+  forge child_upvalues = []
+  forge ui = 0
+  whilst ui < size(upvalues) { shove(child_upvalues, upvalues[ui]); ui = ui + 1 }
+
+  forge saved = yank(fn_stack)
+  code = saved[0]
+  locals = saved[1]
+  upvalues = saved[2]
+  scope_depth = saved[3]
+  loops = saved[4]
+  in_function = saved[5]
+
+  // CLOSURE <fid> <is_local> <index> ... (variable-length upvalue operands)
+  forge e = ["CLOSURE", fid]
+  forge ci = 0
+  whilst ci < size(child_upvalues) {
+    shove(e, child_upvalues[ci][1])
+    shove(e, child_upvalues[ci][2])
+    ci = ci + 1
+  }
+  emit(e)
+}
+
+craft craft_decl() {
+  advance() // 'craft'
+  forge name = expect_ident("expected function name after 'craft'")
+  forge params = parameter_list()
+  compile_craft(name, params)
+  when !in_function {
+    emit(["DEFINE_GLOBAL", name])
+  } else {
+    declare_local(name)
+  }
+}
+
+craft return_stmt() {
+  advance() // 'return'
+  when !in_function { flaw("'return' is only allowed inside functions") }
+  when check(";") || check("}") || check("eof") {
+    emit(["NIL"])
+  } else {
+    expression()
+  }
+  emit(["RETURN"])
+}
+
+craft break_stmt() {
+  advance() // 'break'
+  when size(loops) == 0 { flaw("'break' is only allowed inside a loop") }
+  forge entry = loops[size(loops) - 1]
+  pop_above(entry[3])
+  shove(entry[1], emit_jump())
+}
+
+craft onward_stmt() {
+  advance() // 'onward'
+  when size(loops) == 0 { flaw("'onward' is only allowed inside a loop") }
+  forge entry = loops[size(loops) - 1]
+  pop_above(entry[3])
+  forge target = entry[0]
+  when target != nil { emit(["JUMP", target]) }
+  else { shove(entry[2], emit_jump()) }
+}
+
+craft when_stmt() {
+  advance() // 'when'
+  expression()
+  forge exit = emit_jump_if_false()
+  block()
+  when match_k("else") {
+    forge j = emit_jump()
+    patch(exit)
+    when check("when") { when_stmt() } else { block() }
+    patch(j)
+  } else {
+    patch(exit)
+  }
+}
+
+craft whilst_stmt() {
+  advance() // 'whilst'
+  forge loop_start = size(code)
+  shove(loops, [nil, [], [], scope_depth])
+  expression()
+  forge exit = emit_jump_if_false()
+  block()
+  emit(["LOOP", loop_start])
+  patch(exit)
+  forge entry = yank(loops)
+  forge bi = 0
+  whilst bi < size(entry[1]) { patch(entry[1][bi]); bi = bi + 1 }
+  forge oi = 0
+  whilst oi < size(entry[2]) { patch_to(entry[2][oi], loop_start); oi = oi + 1 }
+}
+
+craft each_stmt() {
+  advance() // 'each'
+  forge name = expect_ident("expected loop variable after 'each'")
+  expect("in", "expected 'in' after loop variable")
+  begin_scope()
+
+  // Declare the hidden locals first, then push their values, so each value
+  // lands exactly on its own slot (the Rust compiler's pattern).
+  declare_local("$it")
+  expression()
+  declare_local("$i")
+  emit(["CONST", 0])
+  declare_local(name)
+  emit(["NIL"])
+
+  forge loop_start = size(code)
+  emit(["GET_LOCAL", resolve_local("$i")])
+  emit(["GET_GLOBAL", "size"])
+  emit(["GET_LOCAL", resolve_local("$it")])
+  emit(["CALL", 1])
+  emit(["LT"])
+  forge exit = emit_jump_if_false()
+
+  emit(["GET_LOCAL", resolve_local("$it")])
+  emit(["GET_LOCAL", resolve_local("$i")])
+  emit(["GET_INDEX"])
+  emit(["SET_LOCAL", resolve_local(name)])
+  emit(["POP"])
+
+  shove(loops, [nil, [], [], scope_depth])
+  block()
+
+  forge continue_target = size(code)
+  forge entry = loops[size(loops) - 1]
+  entry[0] = continue_target
+  forge oi = 0
+  whilst oi < size(entry[2]) { patch_to(entry[2][oi], continue_target); oi = oi + 1 }
+
+  emit(["GET_LOCAL", resolve_local("$i")])
+  emit(["CONST", 1])
+  emit(["ADD"])
+  emit(["SET_LOCAL", resolve_local("$i")])
+  emit(["POP"])
+  emit(["LOOP", loop_start])
+  patch(exit)
+
+  forge entry2 = yank(loops)
+  forge bi = 0
+  whilst bi < size(entry2[1]) { patch(entry2[1][bi]); bi = bi + 1 }
+  end_scope()
+}
+
+// --- adopt (modules) ---
+craft base_of(p) {
+  forge i = size(p) - 1
+  whilst i >= 0 {
+    when p[i] == "/" { return slice(p, 0, i) }
+    i = i - 1
+  }
+  return ""
+}
+
+craft resolve_path(p) {
+  when size(p) > 0 && p[0] == "/" { return p }
+  when base_dir == "" { return p }
+  return base_dir + "/" + p
+}
+
+craft adopt_stmt() {
+  advance() // 'adopt'
+  when !check("str") { flaw("expected a quoted file path after 'adopt'") }
+  forge path = cur()[1]
+  advance()
+  forge full = resolve_path(path)
+  forge ci = 0
+  whilst ci < size(adopted) {
+    when adopted[ci] == full { flaw("circular adopt of '" + path + "'") }
+    ci = ci + 1
+  }
+  shove(adopted, full)
+  forge text = read(full)
+  forge extra = lex(text)
+  yank(extra) // drop the included file's eof token
+
+  // Splice the included tokens into the stream at the current position.
+  forge new_tokens = []
+  forge j = 0
+  whilst j < pos { shove(new_tokens, tokens[j]); j = j + 1 }
+  j = 0
+  whilst j < size(extra) { shove(new_tokens, extra[j]); j = j + 1 }
+  j = pos
+  whilst j < size(tokens) { shove(new_tokens, tokens[j]); j = j + 1 }
+  tokens = new_tokens
+}
+
+// --- expressions ---
+craft expression() { assignment() }
+
+craft is_assign_op(k) {
+  return k == "=" || k == "+=" || k == "-=" || k == "*=" || k == "/=" || k == "%=" || k == "**="
+}
+
+craft is_lvalue() {
+  when cur()[0] != "ident" { return false }
+  forge i = pos + 1
+  forge depth = 0
+  whilst true {
+    when i >= size(tokens) { return false }
+    forge k = tokens[i][0]
+    when k == "[" { depth = depth + 1 }
+    else when k == "]" { depth = depth - 1 }
+    else when depth == 0 { return is_assign_op(k) }
+    i = i + 1
+  }
+}
+
+craft emit_keys(name, groups, fold_all) {
+  emit_name_get(name)
+  forge i = 0
+  whilst i < size(groups) {
+    forge span = groups[i]
+    pos = span[0]
+    expression()
+    pos = span[1]
+    when fold_all || i + 1 < size(groups) { emit(["GET_INDEX"]) }
+    i = i + 1
+  }
+}
+
+craft emit_binary_op(op) {
+  when op == "+=" { emit(["ADD"]) }
+  else when op == "-=" { emit(["SUB"]) }
+  else when op == "*=" { emit(["MUL"]) }
+  else when op == "/=" { emit(["DIV"]) }
+  else when op == "%=" { emit(["MOD"]) }
+  else when op == "**=" { emit(["POWER"]) }
+}
+
+craft assignment() {
+  when is_lvalue() {
+    forge name = expect_ident("expected variable name")
+    forge groups = []
+    whilst match_k("[") {
+      forge s = pos
+      mute = true
+      expression()
+      mute = false
+      forge e = pos
+      expect("]", "expected ']' after index")
+      shove(groups, [s, e])
+    }
+    forge op = cur()[0]
+    advance() // the assignment operator
+    when op == "=" {
+      when size(groups) == 0 {
+        // Plain name assignment: emit the value, then store. No stale read.
+        expression()
+        emit_name_set(name)
+      } else {
+        forge rhs_pos = pos
+        emit_keys(name, groups, false)
+        pos = rhs_pos
+        expression()
+        emit([ "SET_INDEX"])
+      }
+    } else {
+      // Compound: value = target OP rhs. Name targets read once; indexed
+      // targets re-emit container+keys and Rotate3 for the SetIndex write.
+      emit_name_get(name)
+      expression()
+      emit_binary_op(op)
+      when size(groups) > 0 {
+        emit_keys(name, groups, false)
+        emit(["ROTATE3"])
+      }
+      emit_name_set(name)
+    }
+  } else {
+    parse_or()
+    when is_assign_op(cur()[0]) {
+      flaw("invalid assignment target")
+    }
+  }
+}
+
+craft parse_or() {
+  parse_and()
+  whilst match_k("||") {
+    forge j = emit_jump_if_false()
+    emit(["TRUE"])
+    forge j2 = emit_jump()
+    patch(j)
+    parse_and()
+    emit(["NOT"])
+    emit(["NOT"])
+    patch(j2)
+  }
+}
+
+craft parse_and() {
+  parse_range()
+  whilst match_k("&&") {
+    forge j = emit_jump_if_false()
+    parse_range()
+    emit(["NOT"])
+    emit(["NOT"])
+    forge j2 = emit_jump()
+    patch(j)
+    emit(["FALSE"])
+    patch(j2)
+  }
+}
+
+craft parse_range() {
+  parse_equality()
+  when check("..") || check("..=") {
+    forge inclusive = check("..=")
+    advance()
+    parse_or()
+    when inclusive { emit(["BUILD_RANGE", "inclusive"]) }
+    else { emit(["BUILD_RANGE", "exclusive"]) }
+  }
+}
+
+craft parse_equality() {
+  parse_comparison()
+  whilst true {
+    when match_k("==") { parse_comparison(); emit(["EQ"]) }
+    else when match_k("!=") { parse_comparison(); emit(["NEQ"]) }
+    else { break }
+  }
+}
+
+craft parse_comparison() {
+  parse_term()
+  whilst true {
+    when check("<") { advance(); parse_term(); emit(["LT"]) }
+    else when check("<=") { advance(); parse_term(); emit(["LE"]) }
+    else when check(">") { advance(); parse_term(); emit(["GT"]) }
+    else when check(">=") { advance(); parse_term(); emit(["GE"]) }
+    else { break }
+  }
+}
+
+craft parse_term() {
+  parse_factor()
+  whilst true {
+    when match_k("+") { parse_factor(); emit(["ADD"]) }
+    else when match_k("-") { parse_factor(); emit(["SUB"]) }
+    else { break }
+  }
+}
+
+craft parse_factor() {
+  parse_unary()
+  whilst true {
+    when match_k("*") { parse_unary(); emit(["MUL"]) }
+    else when match_k("/") { parse_unary(); emit(["DIV"]) }
+    else when match_k("%") { parse_unary(); emit(["MOD"]) }
+    else { break }
+  }
+}
+
+craft parse_unary() {
+  when match_k("!") {
+    parse_unary()
+    emit(["NOT"])
+  } else when match_k("-") {
+    parse_unary()
+    emit(["NEG"])
+  } else {
+    parse_power()
+  }
+}
+
+// `**` is right-associative; its right operand parses at unary level so that
+// `2 ** -2` works and `-2 ** 2` is -(2 ** 2), like Python and the Rust
+// compiler.
+craft parse_power() {
+  parse_postfix()
+  when match_k("**") {
+    parse_unary()
+    emit(["POWER"])
+  }
+}
+
+craft parse_postfix() {
+  parse_primary()
+  whilst true {
+    when check("(") {
+      forge argc = argument_list()
+      emit(["CALL", argc])
+    } else when match_k("[") {
+      expression()
+      expect("]", "expected ']' after index")
+      emit(["GET_INDEX"])
+    } else when match_k(".") {
+      forge name = expect_ident("expected method name after '.'")
+      emit(["GET_FIELD", name])
+    } else {
+      break
+    }
+  }
+}
+
+craft parse_primary() {
+  forge k = cur()[0]
+  when k == "num" {
+    emit(["CONST", num(cur()[1])])
+    advance()
+  } else when k == "str" {
+    emit(["CONST", cur()[1]])
+    advance()
+  } else when k == "true" {
+    emit(["TRUE"])
+    advance()
+  } else when k == "false" {
+    emit(["FALSE"])
+    advance()
+  } else when k == "nil" {
+    emit(["NIL"])
+    advance()
+  } else when k == "ident" {
+    forge name = cur()[1]
+    advance()
+    emit_name_get(name)
+  } else when k == "(" {
+    advance()
+    expression()
+    expect(")", "expected ')' after expression")
+  } else when k == "[" {
+    list_literal()
+  } else when k == "{" {
+    map_literal()
+  } else when k == "craft" {
+    advance()
+    forge params = parameter_list()
+    compile_craft("(anonymous)", params)
+  } else {
+    flaw("expected expression, got '" + k + "' at line " + str(cur()[2]))
+  }
+}
+
+craft parameter_list() {
+  expect("(", "expected '(' before parameters")
+  forge params = []
+  when !check(")") {
+    whilst true {
+      forge p = expect_ident("expected parameter name")
+      shove(params, p)
+      when !match_k(",") { break }
+      when check(")") { break }
+    }
+  }
+  expect(")", "expected ')' after parameters")
+  return params
+}
+
+craft argument_list() {
+  advance() // '('
+  forge count = 0
+  when !check(")") {
+    whilst true {
+      expression()
+      count = count + 1
+      when !match_k(",") { break }
+      when check(")") { break }
+    }
+  }
+  expect(")", "expected ')' after arguments")
+  return count
+}
+
+craft list_literal() {
+  advance() // '['
+  forge count = 0
+  when !check("]") {
+    whilst true {
+      expression()
+      count = count + 1
+      when !match_k(",") { break }
+      when check("]") { break }
+    }
+  }
+  expect("]", "expected ']' after list")
+  emit(["BUILD_LIST", count])
+}
+
+craft map_literal() {
+  advance() // '{'
+  forge count = 0
+  when !check("}") {
+    whilst true {
+      expression()
+      expect(":", "expected ':' after map key")
+      expression()
+      count = count + 1
+      when !match_k(",") { break }
+      when check("}") { break }
+    }
+  }
+  expect("}", "expected '}' after map")
+  emit(["BUILD_MAP", count])
+}
+
+// --- bytecode printing ---
+craft escape_str(s) {
+  forge out = "\""
+  forge i = 0
+  whilst i < size(s) {
+    forge c = s[i]
+    when c == "\\" { out = out + "\\\\" }
+    else when c == "\"" { out = out + "\\\"" }
+    else when c == "\n" { out = out + "\\n" }
+    else when c == "\t" { out = out + "\\t" }
+    else when c == "\r" { out = out + "\\r" }
+    else { out = out + c }
+    i = i + 1
+  }
+  return out + "\""
+}
+
+craft literal_str(v) {
+  when v == nil { return "nil" }
+  else when v == true { return "true" }
+  else when v == false { return "false" }
+  else when nature(v) == "num" { return str(v) }
+  else { return escape_str(v) }
+}
+
+craft instr_str(e) {
+  forge op = e[0]
+  when op == "CONST" { return "CONST " + literal_str(e[1]) }
+  else when op == "GET_GLOBAL" || op == "SET_GLOBAL" || op == "DEFINE_GLOBAL" || op == "GET_FIELD" {
+    return op + " " + e[1]
+  } else when op == "GET_LOCAL" || op == "SET_LOCAL" || op == "GET_UPVALUE" || op == "SET_UPVALUE" || op == "CALL" || op == "BUILD_LIST" || op == "BUILD_MAP" || op == "JUMP" || op == "JUMP_IF_FALSE" || op == "LOOP" {
+    return op + " " + str(e[1])
+  } else when op == "CLOSURE" {
+    forge out = "CLOSURE " + str(e[1])
+    forge k = 2
+    whilst k < size(e) { out = out + " " + str(e[k]); k = k + 1 }
+    return out
+  } else when op == "BUILD_RANGE" {
+    return "BUILD_RANGE " + e[1]
+  } else {
+    return op
+  }
+}
+
+craft print_bytecode() {
+  forge i = 0
+  whilst i < size(codes) {
+    speak("FUNCTION " + str(i) + " " + fn_names[i] + " " + str(fn_arities[i]))
+    forge j = 0
+    whilst j < size(codes[i]) {
+      speak(instr_str(codes[i][j]))
+      j = j + 1
+    }
+    speak("ENDFN")
+    i = i + 1
+  }
+  speak("MAIN 0")
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+forge main_path = args[0]
+base_dir = base_of(main_path)
+tokens = lex(read(main_path))
+pos = 0
+fn_index = 1 // the script is function 0, so the first craft is 1
+codes = []
+fn_names = []
+fn_arities = []
+shove(fn_names, "<script>")
+shove(fn_arities, 0)
+shove(codes, [])
+code = codes[0]
+fn_stack = []
+shove(fn_stack, [code, locals, upvalues, scope_depth, loops, in_function])
+locals = []
+upvalues = []
+scope_depth = 0
+loops = []
+in_function = false
+mute = false
+
+whilst !at_end() { statement() }
+emit(["NIL"])
+emit(["RETURN"])
+
+print_bytecode()

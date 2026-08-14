@@ -1,0 +1,20 @@
+[package]
+name = "corros"
+version = "0.1.0"
+edition = "2021"
+description = "Corros: a scripting language with its own lexer, bytecode compiler, and virtual machine, written in Rust"
+license = "MIT"
+keywords = ["language", "interpreter", "bytecode", "vm", "scripting"]
+categories = ["compilers", "parsing"]
+
+[lib]
+name = "corros"
+path = "src/lib.rs"
+
+[[bin]]
+name = "corros"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1

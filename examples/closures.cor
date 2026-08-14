@@ -1,0 +1,26 @@
+// closures.cor — functions that capture their surroundings.
+
+// A counter that remembers its state across calls.
+craft make_counter(start) {
+  forge n = start
+  return craft() {
+    n += 1
+    return n
+  }
+}
+
+forge counter = make_counter(100)
+speak("counter:", counter(), counter(), counter())
+
+// A function that builds functions.
+craft make_adder(x) {
+  return craft(y) { return x + y }
+}
+
+forge add5 = make_adder(5)
+forge add10 = make_adder(10)
+speak("add5(3) =", add5(3), " add10(3) =", add10(3))
+
+// An immediately-invoked anonymous craft.
+forge secret = (craft() { return "the answer is 42" })()
+speak(secret)

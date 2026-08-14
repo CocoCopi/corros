@@ -1,0 +1,5 @@
+// hello.cor — every language starts here.
+speak("Hello, world!")
+
+forge name = "corros"
+speak("Welcome to", name, "— a language forged from scratch.")

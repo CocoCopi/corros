@@ -1,0 +1,10 @@
+// fib.cor — recursion, conditionals, and the `**` operator.
+
+craft fib(n) {
+  when n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+
+each i in 0..=10 {
+  speak("fib(", i, ") =", fib(i))
+}

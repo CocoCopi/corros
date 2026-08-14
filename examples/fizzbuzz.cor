@@ -1,0 +1,13 @@
+// fizzbuzz.cor — the classic interview gauntlet.
+
+each n in 1..=30 {
+  when n % 15 == 0 {
+    speak("fizzbuzz")
+  } else when n % 3 == 0 {
+    speak("fizz")
+  } else when n % 5 == 0 {
+    speak("buzz")
+  } else {
+    speak(n)
+  }
+}

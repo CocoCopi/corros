@@ -1,0 +1,28 @@
+// collections.cor — lists, maps, ranges, and their methods.
+
+// Lists
+forge fruits = ["banana", "apple", "cherry"]
+fruits.shove("date")
+fruits.order()
+speak("fruits:", fruits)
+speak("first:", fruits[0], " size:", fruits.size(), " holds apple:", fruits.holds("apple"))
+speak("welded:", fruits.weld(" | "))
+fruits.flip()
+speak("flipped:", fruits)
+
+// Maps
+forge ages = { "alice": 30, "bob": 25 }
+ages["carol"] = 40
+speak("ages:", ages)
+speak("bob is", ages["bob"])
+speak("labels:", ages.labels())
+speak("holds dave:", ages.holds("dave"))
+
+// Ranges
+each n in 0..5 { speak("n =", n) }
+speak("2..8 holds 5:", (2..8).holds(5))
+
+// Folding with a loop
+forge total = 0
+each n in 1..=100 { total += n }
+speak("loop sum 1..=100 =", total)

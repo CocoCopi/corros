@@ -1,0 +1,517 @@
+// vm.cor — the Corros virtual machine, written in Corros.
+//
+// The second half of the self-hosting milestone: it interprets the textual
+// bytecode that compiler.cor prints (FUNCTION / instruction lines / ENDFN /
+// MAIN), running a stack machine with frames, globals, closures, upvalues,
+// maps, ranges, and builtins — the full instruction set.
+//
+//   corros selfhost/vm.cor <program.bc> [args...]
+//   corros selfhost/vm.cor /tmp/self.bc examples/hello.cor   (compiled compiler compiles a program)
+//
+// Upvalue capture uses cell indirection: each captured local is wrapped in a
+// one-element list shared by the closure and the frame (SET_LOCAL writes
+// through to the cell), so cells outlive the frame without a closing pass.
+
+// ---------------------------------------------------------------------------
+// Bytecode loading
+// ---------------------------------------------------------------------------
+
+craft split_str(s, sep) {
+  forge out = []
+  forge acc = ""
+  forge i = 0
+  whilst i < size(s) {
+    when s[i] == sep {
+      shove(out, acc)
+      acc = ""
+    } else {
+      acc = acc + s[i]
+    }
+    i = i + 1
+  }
+  shove(out, acc)
+  return out
+}
+
+// Reverse of compiler.cor's escape_str: turn "a\nb" back into a real string.
+craft unescape(s) {
+  forge out = ""
+  forge i = 1
+  whilst i < size(s) - 1 {
+    when s[i] == "\\" {
+      i = i + 1
+      when s[i] == "n" { out = out + "\n" }
+      else when s[i] == "t" { out = out + "\t" }
+      else when s[i] == "r" { out = out + "\r" }
+      else when s[i] == "\\" { out = out + "\\" }
+      else when s[i] == "\"" { out = out + "\"" }
+      else { out = out + s[i] }
+      i = i + 1
+    } else {
+      out = out + s[i]
+      i = i + 1
+    }
+  }
+  return out
+}
+
+craft slice(s, a, b) {
+  forge out = ""
+  forge i = a
+  whilst i < b {
+    out = out + s[i]
+    i = i + 1
+  }
+  return out
+}
+
+craft parse_literal(s) {
+  when s == "nil" { return nil }
+  else when s == "true" { return true }
+  else when s == "false" { return false }
+  else when size(s) > 0 && s[0] == "\"" { return unescape(s) }
+  return num(s)
+}
+
+craft parse_instr(line) {
+  forge parts = split_str(line, " ")
+  forge op = parts[0]
+  when op == "CONST" {
+    // The literal may contain spaces, so take everything after "CONST ".
+    return ["CONST", parse_literal(slice(line, 6, size(line)))]
+  }
+  else when op == "GET_GLOBAL" || op == "SET_GLOBAL" || op == "DEFINE_GLOBAL" || op == "GET_FIELD" {
+    return [op, parts[1]]
+  } else when op == "GET_LOCAL" || op == "SET_LOCAL" || op == "GET_UPVALUE" || op == "SET_UPVALUE" || op == "CALL" || op == "BUILD_LIST" || op == "BUILD_MAP" || op == "JUMP" || op == "JUMP_IF_FALSE" || op == "LOOP" {
+    return [op, num(parts[1])]
+  } else when op == "CLOSURE" {
+    // CLOSURE <fid> <is_local> <index> ...  (variable-length operands)
+    forge e = ["CLOSURE"]
+    forge i = 1
+    whilst i < size(parts) { shove(e, num(parts[i])); i = i + 1 }
+    return e
+  } else when op == "BUILD_RANGE" {
+    return ["BUILD_RANGE", parts[1]]
+  }
+  return [op]
+}
+
+// Parse the whole bytecode file into fns, where fns[fid] = [name, arity, instrs].
+// `lines` comes from the readlines builtin (linear Rust-side split); a
+// Corros-level split of the full file would be quadratic and far too slow.
+craft parse_bc(lines) {
+  forge fns = []
+  forge i = 0
+  whilst i < size(lines) {
+    forge line = lines[i]
+    when line == "" { i = i + 1; onward }
+    forge parts = split_str(line, " ")
+    when parts[0] == "FUNCTION" {
+      forge name = parts[2]
+      forge arity = num(parts[3])
+      forge instrs = []
+      i = i + 1
+      whilst i < size(lines) && lines[i] != "ENDFN" {
+        shove(instrs, parse_instr(lines[i]))
+        i = i + 1
+      }
+      shove(fns, [name, arity, instrs])
+    }
+    i = i + 1
+  }
+  return fns
+}
+
+// ---------------------------------------------------------------------------
+// Globals
+// ---------------------------------------------------------------------------
+
+globals = []   // [name, value] pairs
+
+craft global_get(name) {
+  forge i = 0
+  whilst i < size(globals) {
+    when globals[i][0] == name { return globals[i][1] }
+    i = i + 1
+  }
+  flaw("undefined variable '" + name + "'")
+  return nil
+}
+
+craft global_set(name, v) {
+  forge i = 0
+  whilst i < size(globals) {
+    when globals[i][0] == name { globals[i][1] = v; return }
+    i = i + 1
+  }
+  shove(globals, [name, v])
+}
+
+craft install_builtins() {
+  shove(globals, ["size", ["blt", "size"]])
+  shove(globals, ["nature", ["blt", "nature"]])
+  shove(globals, ["str", ["blt", "str"]])
+  shove(globals, ["num", ["blt", "num"]])
+  shove(globals, ["int", ["blt", "int"]])
+  shove(globals, ["bool", ["blt", "bool"]])
+  shove(globals, ["abs", ["blt", "abs"]])
+  shove(globals, ["root", ["blt", "root"]])
+  shove(globals, ["least", ["blt", "least"]])
+  shove(globals, ["greatest", ["blt", "greatest"]])
+  shove(globals, ["tick", ["blt", "tick"]])
+  shove(globals, ["span", ["blt", "span"]])
+  shove(globals, ["speak", ["blt", "speak"]])
+  shove(globals, ["hear", ["blt", "hear"]])
+  shove(globals, ["read", ["blt", "read"]])
+  shove(globals, ["readlines", ["blt", "readlines"]])
+  shove(globals, ["flaw", ["blt", "flaw"]])
+  shove(globals, ["shove", ["blt", "shove"]])
+  shove(globals, ["yank", ["blt", "yank"]])
+  shove(globals, ["vouch", ["blt", "vouch"]])
+  shove(globals, ["mcall", ["blt", "mcall"]])
+}
+
+// ---------------------------------------------------------------------------
+// Value operations
+// ---------------------------------------------------------------------------
+
+craft truthy(v) {
+  when v == nil || v == false { return false }
+  else when nature(v) == "num" && v == 0 { return false }
+  else when nature(v) == "string" && v == "" { return false }
+  else when nature(v) == "list" && size(v) == 0 { return false }
+  else when nature(v) == "map" && size(v) == 0 { return false }
+  return true
+}
+
+craft index_get(container, key) {
+  when nature(container) == "list" {
+    forge i = num(key)
+    when i >= 0 && i < size(container) { return container[i] }
+    flaw("index out of bounds: " + str(i) + " (list has " + str(size(container)) + " elements)")
+    return nil
+  } else when nature(container) == "string" {
+    forge i = num(key)
+    when i >= 0 && i < size(container) { return container[i] }
+    flaw("index out of bounds: " + str(i) + " (string has " + str(size(container)) + " characters)")
+    return nil
+  } else when nature(container) == "range" {
+    forge i = num(key)
+    forge len = size(container)
+    when i >= 0 && i < len { return container[0] + i }
+    flaw("index out of bounds: " + str(i) + " (range has " + str(len) + " elements)")
+    return nil
+  } else when nature(container) == "map" {
+    return container[key]
+  }
+  flaw("cannot index a value of type " + nature(container))
+  return nil
+}
+
+craft index_set(container, key, value) {
+  when nature(container) == "list" {
+    forge i = num(key)
+    when i >= 0 && i < size(container) { container[i] = value; return }
+    flaw("index out of bounds: " + str(i) + " (list has " + str(size(container)) + " elements)")
+    return
+  } else when nature(container) == "map" {
+    container[key] = value
+    return
+  }
+  flaw("cannot index a value of type " + nature(container))
+}
+
+craft binary_add() {
+  forge b = yank(stack)
+  forge a = yank(stack)
+  when nature(a) == "num" && nature(b) == "num" { shove(stack, a + b) }
+  else when nature(a) == "string" && nature(b) == "string" { shove(stack, a + b) }
+  else when nature(a) == "list" && nature(b) == "list" {
+    forge merged = []
+    forge i = 0
+    whilst i < size(a) { shove(merged, a[i]); i = i + 1 }
+    i = 0
+    whilst i < size(b) { shove(merged, b[i]); i = i + 1 }
+    shove(stack, merged)
+  } else {
+    flaw("cannot add " + nature(a) + " and " + nature(b))
+  }
+}
+
+craft binary_arith(op) {
+  forge b = yank(stack)
+  forge a = yank(stack)
+  when op == "SUB" { shove(stack, a - b) }
+  else when op == "MUL" { shove(stack, a * b) }
+  else when op == "DIV" { shove(stack, a / b) }
+  else when op == "MOD" { shove(stack, a % b) }
+  else when op == "POWER" { shove(stack, a ** b) }
+}
+
+craft binary_cmp(op) {
+  forge b = yank(stack)
+  forge a = yank(stack)
+  when nature(a) == "num" && nature(b) == "num" {
+    when op == "LT" { shove(stack, a < b) }
+    else when op == "LE" { shove(stack, a <= b) }
+    else when op == "GT" { shove(stack, a > b) }
+    else when op == "GE" { shove(stack, a >= b) }
+  } else when nature(a) == "string" && nature(b) == "string" {
+    when op == "LT" { shove(stack, a < b) }
+    else when op == "LE" { shove(stack, a <= b) }
+    else when op == "GT" { shove(stack, a > b) }
+    else when op == "GE" { shove(stack, a >= b) }
+  } else {
+    flaw("cannot compare " + nature(a) + " and " + nature(b))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Builtins available to compiled programs
+// ---------------------------------------------------------------------------
+
+craft call_builtin(name, args) {
+  when name == "size" { return size(args[0]) }
+  else when name == "nature" { return nature(args[0]) }
+  else when name == "str" { return str(args[0]) }
+  else when name == "num" { return num(args[0]) }
+  else when name == "int" { return int(args[0]) }
+  else when name == "bool" { return bool(args[0]) }
+  else when name == "abs" { return abs(args[0]) }
+  else when name == "root" { return root(args[0]) }
+  else when name == "least" { return least(args[0], args[1]) }
+  else when name == "greatest" { return greatest(args[0], args[1]) }
+  else when name == "tick" { return tick() }
+  else when name == "span" { return span(args[0], args[1]) }
+  else when name == "shove" { shove(args[0], args[1]); return nil }
+  else when name == "yank" { return yank(args[0]) }
+  else when name == "read" { return read(args[0]) }
+  else when name == "readlines" { return readlines(args[0]) }
+  else when name == "flaw" { flaw(args[0]); return nil }
+  else when name == "vouch" { vouch(args[0], args[1]); return nil }
+  else when name == "mcall" { return mcall(args[0], args[1], args[2]) }
+  else when name == "speak" {
+    // Join with spaces, matching the Rust speak for any argument count.
+    forge out = str(args[0])
+    forge si = 1
+    whilst si < size(args) { out = out + " " + str(args[si]); si = si + 1 }
+    speak(out)
+    return nil
+  }
+  flaw("unknown builtin '" + name + "'")
+  return nil
+}
+
+// ---------------------------------------------------------------------------
+// The interpreter
+// ---------------------------------------------------------------------------
+
+fns = []
+stack = []
+frames = []   // [fid, pc, slots_base, trunc_base, cells, upvals]
+
+craft do_call(argc) {
+  forge callee_idx = size(stack) - argc - 1
+  forge callee = stack[callee_idx]
+  when nature(callee) == "list" && size(callee) >= 2 && callee[0] == "fn" {
+    forge fid = callee[1]
+    forge upvals = callee[2]
+    forge arity = fns[fid][1]
+    when argc != arity {
+      flaw("function '" + fns[fid][0] + "' expects " + str(arity) + " argument(s) but got " + str(argc))
+    }
+    when size(frames) > 5000 { flaw("stack overflow: too many nested calls") }
+    // Local slot 0 is the first argument (slots_base); Return truncates to
+    // trunc_base (the callee position), removing the callee itself.
+    shove(frames, [fid, 0, callee_idx + 1, callee_idx, [], upvals])
+  } else when nature(callee) == "list" && size(callee) == 3 && callee[0] == "method" {
+    forge args = []
+    forge i = callee_idx + 1
+    whilst i < size(stack) { shove(args, stack[i]); i = i + 1 }
+    forge result = mcall(callee[1], callee[2], args)
+    whilst size(stack) > callee_idx { yank(stack) }
+    shove(stack, result)
+  } else when nature(callee) == "list" && size(callee) == 2 && callee[0] == "blt" {
+    forge args = []
+    forge i = callee_idx + 1
+    whilst i < size(stack) { shove(args, stack[i]); i = i + 1 }
+    forge result = call_builtin(callee[1], args)
+    whilst size(stack) > callee_idx { yank(stack) }
+    shove(stack, result)
+  } else {
+    flaw("cannot call a value of type " + nature(callee))
+  }
+}
+
+craft do_return() {
+  forge result = yank(stack)
+  forge frame = yank(frames)
+  whilst size(stack) > frame[3] { yank(stack) }
+  shove(stack, result)
+}
+
+craft build_list(n) {
+  forge start = size(stack) - n
+  forge items = []
+  forge i = start
+  whilst i < size(stack) { shove(items, stack[i]); i = i + 1 }
+  whilst size(stack) > start { yank(stack) }
+  shove(stack, items)
+}
+
+craft build_map(n) {
+  forge start = size(stack) - 2 * n
+  forge m = {}
+  forge i = start
+  whilst i < size(stack) {
+    m[stack[i]] = stack[i + 1]
+    i = i + 2
+  }
+  whilst size(stack) > start { yank(stack) }
+  shove(stack, m)
+}
+
+// Capture local slot i of the current frame into a shared cell.
+craft capture_cell(i) {
+  forge fr = frames[size(frames) - 1]
+  forge cells = fr[4]
+  whilst size(cells) <= i { shove(cells, nil) }
+  when cells[i] == nil {
+    cells[i] = [stack[fr[2] + i]]
+  }
+  return cells[i]
+}
+
+craft vm_run() {
+  whilst size(frames) > 0 {
+    forge f = frames[size(frames) - 1]
+    forge pc = f[1]
+    forge instr = fns[f[0]][2][pc]
+    f[1] = pc + 1
+    forge op = instr[0]
+    when op == "CONST" { shove(stack, instr[1]) }
+    else when op == "NIL" { shove(stack, nil) }
+    else when op == "TRUE" { shove(stack, true) }
+    else when op == "FALSE" { shove(stack, false) }
+    else when op == "POP" { yank(stack) }
+    else when op == "GET_LOCAL" { shove(stack, stack[f[2] + instr[1]]) }
+    else when op == "SET_LOCAL" {
+      stack[f[2] + instr[1]] = stack[size(stack) - 1]
+      forge cells = f[4]
+      when instr[1] < size(cells) && cells[instr[1]] != nil {
+        cells[instr[1]][0] = stack[size(stack) - 1]
+      }
+    }
+    else when op == "GET_UPVALUE" { shove(stack, f[5][instr[1]][0]) }
+    else when op == "SET_UPVALUE" { f[5][instr[1]][0] = stack[size(stack) - 1] }
+    else when op == "GET_GLOBAL" { shove(stack, global_get(instr[1])) }
+    else when op == "SET_GLOBAL" { global_set(instr[1], stack[size(stack) - 1]) }
+    else when op == "DEFINE_GLOBAL" { global_set(instr[1], yank(stack)) }
+    else when op == "GET_INDEX" {
+      forge key = yank(stack)
+      forge container = yank(stack)
+      shove(stack, index_get(container, key))
+    }
+    else when op == "SET_INDEX" {
+      forge value = yank(stack)
+      forge key = yank(stack)
+      forge container = yank(stack)
+      index_set(container, key, value)
+      shove(stack, value)
+    }
+    else when op == "GET_FIELD" {
+      forge receiver = yank(stack)
+      shove(stack, ["method", instr[1], receiver])
+    }
+    else when op == "ADD" { binary_add() }
+    else when op == "SUB" { binary_arith("SUB") }
+    else when op == "MUL" { binary_arith("MUL") }
+    else when op == "DIV" { binary_arith("DIV") }
+    else when op == "MOD" { binary_arith("MOD") }
+    else when op == "POWER" { binary_arith("POWER") }
+    else when op == "EQ" {
+      forge b = yank(stack)
+      forge a = yank(stack)
+      shove(stack, a == b)
+    }
+    else when op == "NEQ" {
+      forge b = yank(stack)
+      forge a = yank(stack)
+      shove(stack, a != b)
+    }
+    else when op == "LT" { binary_cmp("LT") }
+    else when op == "LE" { binary_cmp("LE") }
+    else when op == "GT" { binary_cmp("GT") }
+    else when op == "GE" { binary_cmp("GE") }
+    else when op == "NEG" {
+      forge v = yank(stack)
+      shove(stack, -v)
+    }
+    else when op == "NOT" {
+      forge v = yank(stack)
+      shove(stack, !truthy(v))
+    }
+    else when op == "JUMP" { f[1] = instr[1] }
+    else when op == "JUMP_IF_FALSE" {
+      forge cond = yank(stack)
+      when !truthy(cond) { f[1] = instr[1] }
+    }
+    else when op == "LOOP" { f[1] = instr[1] }
+    else when op == "CALL" { do_call(instr[1]) }
+    else when op == "RETURN" { do_return() }
+    else when op == "CLOSURE" {
+      forge fid = instr[1]
+      forge captured = []
+      forge fr = frames[size(frames) - 1]
+      forge k = 2
+      whilst k < size(instr) {
+        forge is_local = instr[k]
+        forge idx = instr[k + 1]
+        k = k + 2
+        when is_local == 1 {
+          shove(captured, capture_cell(idx))
+        } else {
+          shove(captured, fr[5][idx])
+        }
+      }
+      shove(stack, ["fn", fid, captured])
+    }
+    else when op == "CLOSE_UPVALUE" { yank(stack) }
+    else when op == "ROTATE3" {
+      forge c = yank(stack)
+      forge b = yank(stack)
+      forge a = yank(stack)
+      shove(stack, b)
+      shove(stack, c)
+      shove(stack, a)
+    }
+    else when op == "BUILD_LIST" { build_list(instr[1]) }
+    else when op == "BUILD_MAP" { build_map(instr[1]) }
+    else when op == "BUILD_RANGE" {
+      forge end = yank(stack)
+      forge start = yank(stack)
+      when nature(start) != "num" || nature(end) != "num" {
+        flaw("range bounds must be numbers, got " + nature(start) + " and " + nature(end))
+      }
+      when instr[1] == "inclusive" { shove(stack, span(start, end + 1)) }
+      else { shove(stack, span(start, end)) }
+    }
+    else { flaw("unknown opcode '" + op + "'") }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+fns = parse_bc(readlines(args[0]))
+stack = []
+frames = []
+globals = []
+install_builtins()
+prog_args = []
+i = 1
+whilst i < size(args) { shove(prog_args, args[i]); i = i + 1 }
+shove(globals, ["args", prog_args])
+shove(frames, [0, 0, 0, 0, [], []])
+vm_run()
