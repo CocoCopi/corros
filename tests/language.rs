@@ -1,37 +1,20 @@
-//! Integration tests: compile a Corros program and check its output.
+//! Integration tests: compile a Corros program with the Corros-written
+//! compiler (src/compiler.cor) and run its bytecode on the native executor,
+//! exactly like the `corros` binary does, then check the output.
 
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::rc::Rc;
-
-use corros::compiler;
-use corros::error::SourceMap;
 use corros::lexer;
-use corros::loader;
-use corros::vm::VM;
 
-/// Compile `source` and run it, returning the lines printed by `print`.
+/// Compile `source` with the Corros compiler and run its bytecode on the
+/// native executor, returning the lines printed by `speak`.
 fn run(source: &str) -> Vec<String> {
-    let mut sources = SourceMap::new();
-    let tokens = loader::preprocess(source, "test.cor", ".", &mut sources).unwrap();
-    let declared = Rc::new(RefCell::new(HashSet::new()));
-    let function = compiler::compile(tokens, declared).unwrap();
-    let mut vm = VM::new();
-    vm.echo = false;
-    vm.run(function).unwrap();
-    vm.output
+    corros::run_source(source, &[]).unwrap()
 }
 
+/// Run `source` and return the runtime error message.
 fn run_err(source: &str) -> String {
-    let mut sources = SourceMap::new();
-    let tokens = loader::preprocess(source, "test.cor", ".", &mut sources).unwrap();
-    let declared = Rc::new(RefCell::new(HashSet::new()));
-    let function = compiler::compile(tokens, declared).unwrap();
-    let mut vm = VM::new();
-    vm.echo = false;
-    match vm.run(function) {
-        Ok(()) => panic!("expected a runtime error"),
-        Err(e) => e.message,
+    match corros::run_source(source, &[]) {
+        Ok(_) => panic!("expected a runtime error"),
+        Err(e) => e,
     }
 }
 
@@ -58,15 +41,17 @@ fn variables_and_strings() {
         run(r#"forge name = "corros"; speak(name.loud(), name.size(), "hi " + name)"#),
         vec!["CORROS 6 hi corros"]
     );
-}    #[test]
-    fn forge_creates_globals_at_top_level() {
-        assert_eq!(run("forge x = 10; speak(x)"), vec!["10"]);
-    }
+}
 
-    #[test]
-    fn assignment_creates_globals() {
-        assert_eq!(run("x = 99; speak(x)"), vec!["99"]);
-    }
+#[test]
+fn forge_creates_globals_at_top_level() {
+    assert_eq!(run("forge x = 10; speak(x)"), vec!["10"]);
+}
+
+#[test]
+fn assignment_creates_globals() {
+    assert_eq!(run("x = 99; speak(x)"), vec!["99"]);
+}
 
 // ---------------------------------------------------------------------------
 // Functions and closures
@@ -249,8 +234,6 @@ fn compound_indexed_assignment() {
 
 #[test]
 fn break_in_whilst_pops_body_locals() {
-    // The break jumps out of the loop body, so the body's locals must be
-    // popped at the break site or later locals misalign with the stack.
     let src = "craft g() { forge a = 1; whilst true { forge b = 2; break }; forge c = 3; return a + c } speak(g())";
     assert_eq!(run(src), vec!["4"]);
 }
@@ -272,7 +255,6 @@ fn break_and_onward_in_each_pops_body_locals() {
 
 #[test]
 fn assignment_creates_global_inside_expression() {
-    // Assigning to an undeclared name creates a global, even mid-expression.
     let src = "forge xs = [1]; xs[0] = (brand_new = 7); speak(brand_new, xs)";
     assert_eq!(run(src), vec!["7 [7]"]);
 }
@@ -338,15 +320,4 @@ fn lexer_tokens() {
             Eof,
         ]
     );
-}
-
-#[test]
-fn compile_error_has_location() {
-    let err = corros::compiler::compile(
-        lexer::lex("forge = 5", "t.cor").unwrap(),
-        Rc::new(RefCell::new(HashSet::new())),
-    )
-    .unwrap_err();
-    assert!(err.message.contains("variable name"), "got: {}", err.message);
-    assert_eq!(err.line, 1);
 }

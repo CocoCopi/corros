@@ -56,13 +56,13 @@ else
   fi
   repo="$tmp/corros"
   if ! git clone --depth 1 https://github.com/CocoCopi/corros.git "$repo" 2>/dev/null \
-     && ! { [[ -f Cargo.toml && -f lib/prelude.cor ]] && repo="$(pwd)"; }; then
+     && ! { [[ -f Cargo.toml && -f src/prelude.cor ]] && repo="$(pwd)"; }; then
     echo "corros: could not obtain the sources" >&2
     exit 1
   fi
   (cd "$repo" && cargo build --release)
   bin="$repo/target/release/corros"
-  prelude="$repo/lib/prelude.cor"
+  prelude="$repo/src/prelude.cor"
 fi
 
 # --- install --------------------------------------------------------------

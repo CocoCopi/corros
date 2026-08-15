@@ -5,9 +5,10 @@
 Corros is a bytecode-compiled scripting language with its own lexer, its own
 compiler, its own virtual machine, and a syntax that belongs to **no other
 language**. Rust is written in Rust. Corros is written in Rust — and it already
-compiles **itself**: the `selfhost/` directory holds a Corros compiler and a
-Corros virtual machine, both written in Corros, proven by a byte-identical
-bootstrap chain (`bash selfhost/demo.sh`).
+compiles **itself**: `src/compiler.cor`, `src/vm.cor`, and `src/prelude.cor`
+are a Corros compiler, a Corros virtual machine, and a Corros standard
+library — all written in Corros, proven by a byte-identical bootstrap chain
+(`bash demo.sh`).
 
 ```corros
 // This is Corros. Read it out loud.
@@ -90,7 +91,8 @@ cargo build --release
 ./target/release/corros            # start the REPL
 ./target/release/corros file.cor   # run a script
 ./target/release/corros --dump file.cor  # print compiled bytecode
-./target/release/corros --run-bc file.bc # run compiled bytecode (self-hosting)
+./target/release/corros --run-bc file.bc # run compiled bytecode (native executor)
+./target/release/corros --reference file.cor # run through the Corros-written VM (src/vm.cor)
 ```
 
 ## A taste of Corros
@@ -128,6 +130,16 @@ each n in 1..=3 { speak(n) }           // 1 2 3
 source ──lexer──▶ tokens ──compiler──▶ bytecode ──VM──▶ result
 ```
 
+**The language is Corros, the bootstrap is Rust.** Like rustc's first compiler
+was written in OCaml, Corros's first compiler is written in Rust — but only as
+a small seed (`src/seed.rs`, a tree-walking interpreter that can boot the
+Corros-written compiler) and a native executor (`src/native.rs`) that runs the
+compiler's bytecode at native speed. Your program is compiled by
+`src/compiler.cor` (written in Corros) and executed by the native executor;
+`src/vm.cor` is the reference interpreter, written in Corros, available via
+`--reference` and proven by `demo.sh`. The result: a language written in
+itself, with programs running at native-interpreter speed.
+
 ## Self-hosting: the full interpreter, written in Corros
 
 Like Rust in Rust, the endgame is the language building itself — and Corros is
@@ -136,47 +148,45 @@ written in Corros**, covering every feature: closures with upvalues, maps,
 ranges, methods, power, compound and indexed assignment, and `adopt` modules.
 
 ```bash
-bash selfhost/demo.sh
+bash demo.sh
 ```
 
 The bootstrap chain, proven end to end:
 
-1. The Rust interpreter compiles `selfhost/compiler.cor` — **a Corros
-   compiler written in Corros** — from source.
-2. It also compiles `selfhost/vm.cor` — **a Corros virtual machine written
-   in Corros** — from source.
-3. The **compiled VM runs the compiled compiler**, which compiles a
-   full-language program (closures, upvalues, methods, maps).
-4. The output is **byte-identical** to the Rust compiler's output, and the
-   compiled VM runs the compiled program to completion.
-5. The compiled compiler recompiles its own source — **byte-identical**: the
-   compiler is a fixed point. Corros compiles Corros, and Corros runs Corros.
+1. The seed boots `src/compiler.cor` — **a Corros compiler written in
+   Corros** — which compiles a full-language program.
+2. The same compiler compiles `src/vm.cor` — **a Corros virtual machine
+   written in Corros** — from source.
+3. The **compiled VM runs the compiled compiler**, which compiles a program
+   with closures, upvalues, methods, and maps.
+4. The output is **byte-identical** to the source compiler's output — the
+   compiled chain behaves exactly like the source compiler.
+5. The compiler is a **fixed point**: it recompiles its own source
+   byte-identically. Corros compiles Corros, and Corros runs Corros.
 
-To make the deep chain fast, the compiled VM and compiled compiler can run
-natively on the host engine (`corros --run-bc file.bc`) — a normal feature,
-since they are ordinary Corros programs.
+The deep chain is fast because compiled programs run on the native executor
+(`corros --run-bc file.bc`) — ordinary Corros programs, at native speed.
 
 ### The standard library is Corros too
 
-`lib/prelude.cor` is the standard library, **written in Corros**. It is
+`src/prelude.cor` is the standard library, **written in Corros**. It is
 spliced in front of every program, and method calls (`xs.shove(1)`,
 `s.split(",")`) route through its `$method` dispatcher — so `shove`, `yank`,
 `size`, `holds`, `flip`, `clear`, `weld`, `split`, `opens`, `closes`, and
 `reforge` are implemented in the language itself, with a native fallback only
 where Corros needs host primitives (case conversion, trimming, map
-internals). What's left of Rust is the bootstrap seed — the same role `rustc`
-plays for Rust.
+internals). What's left of Rust is the bootstrap seed and the native executor
+— the same role `rustc`'s first OCaml compiler played for Rust.
 
-| crate module | job |
-| ------------ | --- |
-| `src/lexer.rs`   | character scanner → tokens (numbers, strings, operators, Corros keywords) |
-| `src/compiler.rs`| recursive-descent parser that emits bytecode in one pass: scopes, closures (upvalue capture), control flow, assignment-as-expression |
-| `src/chunk.rs`   | bytecode instructions, constant pools, disassembler |
-| `src/vm.rs`      | stack-based interpreter: calls, closures, upvalues, builtins, tracebacks |
-| `src/value.rs`   | runtime values: numbers, strings, lists, maps, ranges, closures, natives |
-| `src/stdlib.rs`  | builtin functions and collection methods (`speak`, `size`, `shove`, `weld`, …) |
-| `src/loader.rs`  | file loading + `adopt` token splicing |
-| `src/repl.rs`    | the interactive REPL |
+| file | job |
+| ---- | --- |
+| `src/compiler.cor` | **the Corros compiler** — lexer + single-pass bytecode compiler, written in Corros |
+| `src/vm.cor`       | **the Corros VM** — the reference interpreter, written in Corros (`--reference`) |
+| `src/prelude.cor`  | **the Corros standard library** — list/string methods, `$method` dispatch |
+| `src/seed.rs`      | the bootstrap seed: a tree-walking interpreter that boots `compiler.cor` |
+| `src/native.rs`    | the native executor: runs the compiler's bytecode at native speed |
+| `src/lexer.rs`     | the seed's tokenizer (reads the Corros sources) |
+| `src/error.rs`     | compile-error formatting |
 
 ## Language reference (the short version)
 
@@ -211,12 +221,15 @@ plays for Rust.
 - [x] Lexer, compiler, bytecode VM, REPL
 - [x] Closures, collections, ranges, modules, error reporting
 - [x] **The full interpreter rewritten in Corros and bootstrapped from source** —
-      `selfhost/compiler.cor` + `selfhost/vm.cor` compile and run the entire
-      language, byte-identical to the Rust implementation (`bash selfhost/demo.sh`)
-- [x] **A standard library written in Corros itself** — `lib/prelude.cor`
+      `src/compiler.cor` + `src/vm.cor` compile and run the entire language,
+      byte-identical through the whole chain (`bash demo.sh`)
+- [x] **A standard library written in Corros itself** — `src/prelude.cor`
       implements the list and string methods in Corros, with native fallbacks
       only where host primitives are required
-- [ ] Performance: register-based VM, JIT, or native compilation
+- [x] **Native execution speed** — the native executor (`src/native.rs`) runs
+      compiled bytecode at interpreter speed: `fib(30)` in ~1.4s,
+      a 2.7M-iteration loop in ~1.4s
+- [ ] Performance beyond: register-based VM, JIT, or ahead-of-time compilation
 
 ## Contributing
 

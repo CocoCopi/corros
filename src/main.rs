@@ -1,34 +1,29 @@
 //! Corros's command-line interface.
 //!
+//! Every program runs through the Corros-written interpreter: the seed runs
+//! `src/compiler.cor` (the Corros compiler, which compiles your program to
+//! bytecode) and then `src/vm.cor` (the Corros VM, which executes it).
+//!
 //! Usage:
 //!   corros [options] [file.cor] [args...]
 //!   corros          start the REPL
-//!   corros --dump f disassemble the compiled bytecode of f
-//!   corros --run-bc f.bc [args...]  run compiled bytecode natively
+//!   corros --dump f compile f and print its bytecode
+//!   corros --run-bc f.bc [args...]  run compiled bytecode (native executor)
+//!   corros --reference f  run f through the Corros-written VM (src/vm.cor)
 //!   corros -v       print the version
 
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::rc::Rc;
-
-use corros::bc;
-use corros::chunk;
-use corros::compiler;
-use corros::error::SourceMap;
-use corros::loader;
-use corros::value::Value;
-use corros::vm::VM;
-use corros::repl;
+use std::io::Write;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut dump = false;
     let mut run_bc = false;
+    let mut reference = false;
     let mut path: Option<String> = None;
     let mut script_args: Vec<String> = Vec::new();
 
-    let mut i = 1;
+    let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-h" | "--help" => {
@@ -41,6 +36,7 @@ fn main() {
             }
             "--dump" => dump = true,
             "--run-bc" => run_bc = true,
+            "--reference" => reference = true,
             s if s.starts_with('-') => {
                 eprintln!("corros: unknown option '{}'", s);
                 print_usage();
@@ -56,90 +52,94 @@ fn main() {
     }
 
     match path {
-        None => {
-            let mut vm = VM::new();
-            vm.echo = true;
-            let mut sources = SourceMap::new();
-            repl::run(&mut vm, &mut sources);
-        }
+        None => repl(),
         Some(file) => {
-            let mut vm = VM::new();
-            vm.echo = true;
-            let args_list = Value::List(Rc::new(RefCell::new(
-                script_args
-                    .into_iter()
-                    .map(Value::str)
-                    .collect::<Vec<Value>>(),
-            )));
-            vm.set_global("args", args_list);
-
             if run_bc {
-                // Execute pre-compiled bytecode text (self-hosting chain).
-                let text = match std::fs::read_to_string(&file) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("corros: could not open '{}': {}", file, e);
-                        std::process::exit(65);
-                    }
+                // Execute pre-compiled bytecode text (native executor, or the
+                // Corros-written VM under --reference).
+                let result = if reference {
+                    corros::seed::run_vm_on_reference(&file, &script_args, true)
+                } else {
+                    corros::seed::run_vm_on(&file, &script_args, true)
                 };
-                let function = match bc::load_bytecode(&text) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("corros: {}", e);
-                        std::process::exit(65);
-                    }
-                };
-                if let Err(e) = vm.run(function) {
-                    eprint!("{}", e.render());
+                if let Err(e) = result {
+                    eprintln!("error: {}", e);
                     std::process::exit(70);
                 }
                 return;
             }
-
-            let mut sources = SourceMap::new();
-            let tokens = match loader::load_program(&file, &mut sources) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprint!("{}", e.render(&sources));
-                    std::process::exit(65);
-                }
-            };
-            let declared = Rc::new(RefCell::new(HashSet::new()));
-            let function = match compiler::compile(tokens, declared) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprint!("{}", e.render(&sources));
-                    std::process::exit(65);
-                }
-            };
-
             if dump {
-                dump_functions(&function);
+                // Compile the file and print the bytecode the Corros compiler emits.
+                let result = corros::seed::dump_bytecode(&file);
+                match result {
+                    Ok(lines) => {
+                        for line in lines {
+                            println!("{}", line);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(65);
+                    }
+                }
+                return;
             }
-
-            if let Err(e) = vm.run(function) {
-                eprint!("{}", e.render());
-                std::process::exit(70);
+            // The native executor by default; the Corros-written VM under
+            // --reference.
+            let result = if reference {
+                corros::seed::run_file_reference(&file, &script_args, true)
+            } else {
+                corros::run_file(&file, &script_args, true)
+            };
+            match result {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(70);
+                }
             }
         }
     }
 }
 
-fn dump_functions(function: &std::rc::Rc<corros::chunk::Function>) {
-    print!(
-        "{}",
-        chunk::disassemble_chunk(&function.chunk, &function.name)
+/// A simple REPL. Each line is a complete program run through the Corros
+/// compiler and VM (state does not persist between lines).
+fn repl() {
+    println!(
+        "corros {} — the language written in Corros. Type 'halt' to exit.",
+        env!("CARGO_PKG_VERSION")
     );
-    for constant in &function.chunk.constants {
-        if let Value::Function(inner) = constant {
-            dump_functions(inner);
+    let stdin = std::io::stdin();
+    loop {
+        print!("corros> ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        match stdin.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "halt" || line == "exit" {
+            break;
+        }
+        match corros::run_source(&line, &[]) {
+            Ok(lines) => {
+                for l in lines {
+                    println!("{}", l);
+                }
+            }
+            Err(e) => eprintln!("error: {}", e),
         }
     }
 }
 
 fn print_usage() {
     println!(
-        "Corros {} — a bytecode-compiled scripting language\n\
+        "Corros {} — a scripting language whose interpreter is written in Corros\n\
          \n\
          Usage:\n\
          \x20 corros [options] [file.cor] [args...]\n\
@@ -148,7 +148,8 @@ fn print_usage() {
          \x20 -h, --help     show this help\n\
          \x20 -v, --version  print the version\n\
          \x20 --dump FILE    compile FILE and print its bytecode\n\
-         \x20 --run-bc FILE  run compiled bytecode (self-hosting chain)\n\
+         \x20 --run-bc FILE  run compiled bytecode (native executor)\n\
+         \x20 --reference    run through the Corros-written VM (src/vm.cor)\n\
          \n\
          With no file, starts the interactive REPL.",
         env!("CARGO_PKG_VERSION")

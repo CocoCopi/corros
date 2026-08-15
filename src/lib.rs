@@ -1,18 +1,15 @@
-//! Corros: a scripting language with its own lexer, bytecode compiler, and
-//! virtual machine, written in Rust.
+//! Corros: a scripting language forged from scratch.
 //!
-//! The pipeline is: [`lexer`] → [`compiler`] (emits bytecode directly) →
-//! [`vm`] (a stack-based interpreter). [`loader`] handles files and `adopt`
-//! splicing, [`stdlib`] provides builtins and methods, and [`repl`] provides
-//! the interactive shell.
+//! The language itself is implemented in Corros (`src/compiler.cor`, the
+//! lexer + bytecode compiler; `src/vm.cor`, the virtual machine; and
+//! `src/prelude.cor`, the standard library). This crate is only the bootstrap
+//! seed — the small interpreter in [`seed`] that can boot the Corros-written
+//! interpreter, in the same way rustc's first compiler was written in OCaml.
+//! [`lexer`] provides the tokenizer the seed needs to read the Corros sources.
 
-pub mod bc;
-pub mod chunk;
-pub mod compiler;
 pub mod error;
 pub mod lexer;
-pub mod loader;
-pub mod repl;
-pub mod stdlib;
-pub mod value;
-pub mod vm;
+pub mod native;
+pub mod seed;
+
+pub use seed::{run_file, run_source};

@@ -165,42 +165,45 @@ compiles when the input is complete). Every statement is wrapped as
 
 ## Architecture (for extending the language)
 
-Rust crate in `src/`:
+**The interpreter is written in Corros; Rust is only the bootstrap.**
 
-- `lexer.rs` — tokens; keywords live in `identifier()` (line ~424)
-- `compiler.rs` — single-pass recursive-descent compiler → bytecode (no AST);
-  `mute` mode scans lvalues without emitting; `Rotate3` opcode handles
-  `xs[i] += 1`; assignment keeps its value on the stack (opcodes `SetLocal`,
-  `SetGlobal`, `SetIndex` all leave the value)
-- `chunk.rs` — `OpCode` enum, disassembler
-- `vm.rs` — stack VM; frames, closures (upvalue capture), traceback rendering
-- `stdlib.rs` — builtins (`BUILTINS` table) and the method table (`method_defs`:
-  `"shove" => list_shove` etc.)
-- `value.rs` — `Value` enum; `type_name()` feeds `nature()`
-- `repl.rs`, `main.rs` — REPL wrapper & CLI (`--dump`, `-v`)
-- `error.rs` — source-aware compile errors + runtime tracebacks
+Corros side (`src/*.cor`):
+
+- `compiler.cor` — **the Corros compiler**: lexer + single-pass bytecode
+  compiler (no AST). Its own implementation stays in a deliberate subset — no
+  closures/maps/methods in ITS source — so self-compilation only exercises
+  constructs that were already proven correct.
+- `vm.cor` — **the reference VM**, written in Corros, using the full
+  language. Run any program through it with `corros --reference file.cor`
+  (slow — its dispatch is interpreted — but authoritative).
+- `prelude.cor` — **the Corros standard library**, spliced in front of every
+  program; method calls route through its `$method(recv, name, [args])`
+  dispatcher, so list/string methods (`shove`, `yank`, `size`, `holds`,
+  `flip`, `clear`, `weld`, `split`, `opens`, `closes`, `reforge`) are
+  implemented in Corros. The native side falls back to its method table only
+  for host primitives (`mcall(name, recv, args)`).
+
+Rust side (`src/*.rs`):
+
+- `seed.rs` — the bootstrap seed: a tree-walking interpreter that runs
+  `compiler.cor`. Values, builtins, operators, and the native method table
+  live here (`Value`, `binary_op`, `index_get`, `native_builtin`,
+  `lookup_method`).
+- `native.rs` — the native executor: parses the textual bytecode
+  `compiler.cor` emits (`FUNCTION`/`ENDFN` blocks, one instruction per line)
+  and runs it at native speed — `fib(30)` in ~1.4s. This is the default
+  execution path.
+- `lexer.rs` — the seed's tokenizer (reads the Corros sources).
+- `main.rs` — CLI: `corros file.cor` (compile → native executor),
+  `--dump` (print bytecode), `--run-bc` (run bytecode natively),
+  `--reference` (run through `vm.cor`), REPL.
 - `tests/language.rs` — integration tests: `run("...")` executes source and
-  returns captured output lines
+  returns captured output lines.
 
-**Self-hosting** (`selfhost/`): `compiler.cor` is a Corros compiler written in
-Corros and `vm.cor` is a Corros VM written in Corros — together they cover the
-FULL language (closures with upvalues, maps, ranges, methods, `adopt`, power,
-compound assignment). `selfhost/demo.sh` runs the bootstrap proof: the compiled
-VM runs the compiled compiler, output is byte-identical to the Rust
-implementation, and the compiler is a fixed point under its own compilation.
-`corros --run-bc file.bc` runs compiled bytecode natively on the host engine.
-
-(Note: `compiler.cor`'s own implementation stays in a deliberate subset — no
-closures/maps/methods in ITS source — so self-compilation only exercises
-constructs that were already proven correct. `vm.cor` uses the full language.)
-
-The standard library is Corros too: `lib/prelude.cor` is spliced in front of
-every program, and method calls route through its `$method` dispatcher, so
-list/string methods (`shove`, `yank`, `size`, `holds`, `flip`, `clear`,
-`weld`, `split`, `opens`, `closes`, `reforge`) are implemented in Corros. The
-Rust VM falls back to its native method table only when the prelude is absent
-or a method needs host primitives (`mcall`). `$method(recv, name, [args])` is
-the signature; `mcall(name, recv, args)` is the native fallback bridge.
+**Self-hosting** (`demo.sh`): the seed boots `compiler.cor`, which compiles
+itself and `vm.cor`; the compiled VM then runs the compiled compiler, and the
+output is byte-identical to the source compiler's — Corros compiles Corros,
+and Corros runs Corros.
 
 ## Gotchas (important — these bite)
 

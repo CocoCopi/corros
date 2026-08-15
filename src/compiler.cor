@@ -638,15 +638,25 @@ craft assignment() {
       }
     } else {
       // Compound: value = target OP rhs. Name targets read once; indexed
-      // targets re-emit container+keys and Rotate3 for the SetIndex write.
-      emit_name_get(name)
+      // targets re-emit container+keys for the full read (fold_all), then
+      // again for the write, with Rotate3 putting the result under them so
+      // SET_INDEX can consume container+key+value. emit_keys rewinds the
+      // token stream, so the RHS position must be saved and restored.
+      forge rhs_pos = pos
+      when size(groups) == 0 { emit_name_get(name) }
+      else { emit_keys(name, groups, true) }
+      pos = rhs_pos
       expression()
+      forge end_pos = pos // past the RHS; emit_keys rewinds, so restore it
       emit_binary_op(op)
       when size(groups) > 0 {
         emit_keys(name, groups, false)
+        pos = end_pos
         emit(["ROTATE3"])
+        emit(["SET_INDEX"])
+      } else {
+        emit_name_set(name)
       }
-      emit_name_set(name)
     }
   } else {
     parse_or()
@@ -944,10 +954,13 @@ base_dir = base_of(main_path)
 tokens = lex(read(main_path))
 
 // Splice the prelude (the standard library, written in Corros) in front of
-// the source, exactly as the Rust loader does — required for byte-identical
-// output, since method calls desugar to $method.
+// the source, exactly as the seed does — required for byte-identical output,
+// since method calls desugar to $method. The seed passes its own located
+// prelude path as args[1]; when running standalone we fall back to a search.
 forge prelude_text = ""
-when file_exists("lib/prelude.cor") { prelude_text = read("lib/prelude.cor") }
+when size(args) > 1 && file_exists(args[1]) { prelude_text = read(args[1]) }
+else when file_exists("src/prelude.cor") { prelude_text = read("src/prelude.cor") }
+else when file_exists("lib/prelude.cor") { prelude_text = read("lib/prelude.cor") }
 else when file_exists("../lib/prelude.cor") { prelude_text = read("../lib/prelude.cor") }
 when prelude_text != "" {
   forge pre = lex(prelude_text)

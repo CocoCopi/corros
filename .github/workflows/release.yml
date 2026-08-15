@@ -1,0 +1,65 @@
+# Builds prebuilt corros binaries for the common platforms and attaches them
+# to a release whenever a tag like `v0.1.0` is pushed:
+#   git tag v0.1.0 && git push --tags
+# The one-line installer (install.sh) downloads these binaries.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: corros-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: corros-linux-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: corros-macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: corros-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: corros-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/corros.exe" dist/
+          else
+            cp "target/${{ matrix.target }}/release/corros" dist/
+          fi
+          cp src/prelude.cor dist/
+          # tar works in git-bash on Windows too
+          (cd dist && tar czf "../${{ matrix.asset }}.tar.gz" .)
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "corros-*.tar.gz"
+          generate_release_notes: true
