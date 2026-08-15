@@ -31,6 +31,16 @@ use crate::lexer::{Token, TokenKind};
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
+pub struct RangeData {
+    pub start: f64,
+    pub end: f64,
+    pub inclusive: bool,
+}
+
+/// A runtime value. `Range` is boxed so `Value` stays 16 bytes — the stack
+/// copies a whole `Value` on every push, so a smaller enum is measurably
+/// faster in the native executor's hot loop.
+#[derive(Clone, Debug)]
 pub enum Value {
     Nil,
     Bool(bool),
@@ -38,7 +48,7 @@ pub enum Value {
     Str(Rc<str>),
     List(Rc<RefCell<Vec<Value>>>),
     Map(Rc<RefCell<HashMap<u64, (Value, Value)>>>),
-    Range { start: f64, end: f64, inclusive: bool },
+    Range(Rc<RangeData>),
     Fn(Rc<FnValue>),
     Native(&'static str),
 }
@@ -83,10 +93,9 @@ pub fn value_eq(a: &Value, b: &Value) -> bool {
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::List(x), Value::List(y)) => Rc::ptr_eq(x, y),
         (Value::Map(x), Value::Map(y)) => Rc::ptr_eq(x, y),
-        (
-            Value::Range { start: a1, end: a2, inclusive: a3 },
-            Value::Range { start: b1, end: b2, inclusive: b3 },
-        ) => a1 == b1 && a2 == b2 && a3 == b3,
+        (Value::Range(a), Value::Range(b)) => {
+            a.start == b.start && a.end == b.end && a.inclusive == b.inclusive
+        }
         (Value::Fn(x), Value::Fn(y)) => Rc::ptr_eq(x, y),
         (Value::Native(x), Value::Native(y)) => x == y,
         _ => false,
@@ -172,11 +181,11 @@ pub fn to_string(v: &Value) -> String {
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
-        Value::Range { start, end, inclusive } => format!(
+        Value::Range(r) => format!(
             "{}{}{}",
-            format_num(*start),
-            if *inclusive { "..=" } else { ".." },
-            format_num(*end)
+            format_num(r.start),
+            if r.inclusive { "..=" } else { ".." },
+            format_num(r.end)
         ),
         Value::Fn(f) => format!("<fn {}>", f.name),
         Value::Native(name) => format!("<native {}>", name),
@@ -869,9 +878,9 @@ impl Interpreter {
                     let it = self.eval(env, iter)?;
                     let items: Vec<Value> = match &it {
                         Value::List(l) => l.borrow().clone(),
-                        Value::Range { start, end, inclusive } => {
-                            let len = range_len(*start, *end, *inclusive);
-                            (0..len).map(|i| Value::Num(start + i as f64)).collect()
+                        Value::Range(r) => {
+                            let len = range_len(r.start, r.end, r.inclusive);
+                            (0..len).map(|i| Value::Num(r.start + i as f64)).collect()
                         }
                         Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string().into())).collect(),
                         _ => {
@@ -1170,11 +1179,11 @@ pub(crate) fn index_get(container: &Value, key: &Value) -> Result<Value, String>
                 )),
             }
         }
-        Value::Range { start, end, inclusive } => {
+        Value::Range(r) => {
             let i = index_from_value(key)?;
-            let len = range_len(*start, *end, *inclusive);
+            let len = range_len(r.start, r.end, r.inclusive);
             if i < len {
-                Ok(Value::Num(start + i as f64))
+                Ok(Value::Num(r.start + i as f64))
             } else {
                 Err(format!(
                     "index out of bounds: {} (range has {} elements)",
@@ -1319,9 +1328,7 @@ pub(crate) fn native_builtin(
                     Value::Str(s) => s.chars().count(),
                     Value::List(items) => items.borrow().len(),
                     Value::Map(entries) => entries.borrow().len(),
-                    Value::Range { start, end, inclusive } => {
-                        range_len(*start, *end, *inclusive)
-                    }
+                    Value::Range(r) => range_len(r.start, r.end, r.inclusive),
                     other => {
                         return Err(format!(
                             "size expects a string, list, map, or range, got {}",
@@ -1424,7 +1431,11 @@ pub(crate) fn native_builtin(
                     _ => want_num("span", &args[0])?,
                 };
                 let end = want_num("span", &args[args.len() - 1])?;
-                Ok(Value::Range { start, end, inclusive: false })
+                Ok(Value::Range(Rc::new(RangeData {
+                    start,
+                    end,
+                    inclusive: false,
+                })))
             }
             "vouch" => {
                 expect_args_between("vouch", args, 1, 2)?;
@@ -1558,7 +1569,7 @@ fn lookup_method(receiver: &Value, name: &str) -> Option<MethodFn> {
             "clear" => Some(map_clear),
             _ => None,
         },
-        Value::Range { .. } => match name {
+        Value::Range(_) => match name {
             "size" => Some(range_size),
             "holds" => Some(range_holds),
             _ => None,
@@ -1594,7 +1605,7 @@ fn as_str(v: &Value) -> Result<Rc<str>, String> {
 
 fn as_range(v: &Value) -> Result<(f64, f64, bool), String> {
     match v {
-        Value::Range { start, end, inclusive } => Ok((*start, *end, *inclusive)),
+        Value::Range(r) => Ok((r.start, r.end, r.inclusive)),
         other => Err(format!("expected a range, got {}", type_name(other))),
     }
 }
@@ -1886,8 +1897,8 @@ fn write_temp(prefix: &str, content: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Compile a program with the Corros-written compiler and return its
-/// bytecode text.
+/// Compile a program with the Corros-written compiler (the seed interprets
+/// `src/compiler.cor` from source) and return its bytecode text.
 fn compile_to_bytecode(path: &str, args: &[String]) -> Result<String, String> {
     let compiler_cor = find_src("compiler.cor")
         .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
@@ -1914,10 +1925,69 @@ fn compile_to_bytecode(path: &str, args: &[String]) -> Result<String, String> {
     Ok(bytecode_lines.join("\n") + "\n")
 }
 
-/// Run a Corros program: the seed runs `src/compiler.cor` (compiling the
-/// program to bytecode), then the native executor (`src/native.rs`) runs that
-/// bytecode at native speed. Returns the program's `speak` output. This is
-/// the same path the `corros` binary uses for every program.
+/// FNV-1a — a stable, dependency-free hash for cache keys.
+fn fnv1a(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in data {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Where the compiled compiler is cached: a content-addressed bytecode file
+/// keyed on `compiler.cor` and `prelude.cor`, so the seed never re-interprets
+/// the compiler for programs it has already seen the sources of.
+fn compiler_cache_path() -> Result<PathBuf, String> {
+    let compiler_cor = find_src("compiler.cor")
+        .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
+    let csrc = std::fs::read(&compiler_cor)
+        .map_err(|e| format!("corros: could not read '{}': {}", compiler_cor.display(), e))?;
+    let mut hash = fnv1a(&csrc);
+    if let Some(p) = find_src("prelude.cor") {
+        if let Ok(psrc) = std::fs::read(&p) {
+            hash ^= fnv1a(&psrc).rotate_left(32);
+        }
+    }
+    Ok(std::env::temp_dir().join(format!("corros-compiler-{:016x}.bc", hash)))
+}
+
+/// The compiled compiler: `compiler.cor` compiled once (with the prelude
+/// spliced, exactly like any program) and cached. `demo.sh` proves the
+/// compiled compiler is byte-identical to the source, so running it on the
+/// native executor compiles programs exactly as the seed would — without the
+/// seed re-interpreting the compiler for every run.
+fn get_compiler_bytecode() -> Result<String, String> {
+    let cache = compiler_cache_path()?;
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        return Ok(text);
+    }
+    let compiler_cor = find_src("compiler.cor")
+        .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
+    let bytecode = compile_to_bytecode(&compiler_cor.display().to_string(), &[])?;
+    let _ = std::fs::write(&cache, &bytecode);
+    Ok(bytecode)
+}
+
+/// Compile a program using the cached compiled compiler (native speed), and
+/// return its bytecode text.
+fn compile_user_program(path: &str, args: &[String]) -> Result<String, String> {
+    let compiler_bc = get_compiler_bytecode()?;
+    let prelude = find_src("prelude.cor");
+    let mut compile_args = vec![path.to_string()];
+    if let Some(p) = &prelude {
+        compile_args.push(p.display().to_string());
+    }
+    compile_args.extend(args.iter().cloned());
+    let lines = crate::native::run_bytecode(&compiler_bc, &compile_args, false)?;
+    Ok(lines.join("\n") + "\n")
+}
+
+/// Run a Corros program: the cached compiled compiler (`compiler.cor`
+/// compiled once, then run at native speed) compiles the program, and the
+/// native executor (`src/native.rs`) runs that bytecode. Returns the
+/// program's `speak` output. This is the same path the `corros` binary uses
+/// for every program.
 pub fn run_source(source: &str, args: &[String]) -> Result<Vec<String>, String> {
     let src_path = write_temp("corros-src", source)?;
     let result = run_chain(&src_path.display().to_string(), args);
@@ -1928,7 +1998,7 @@ pub fn run_source(source: &str, args: &[String]) -> Result<Vec<String>, String> 
 /// Run the chain for a program that already exists on disk: the Corros
 /// compiler compiles it, and the native executor runs the bytecode.
 pub fn run_file(path: &str, args: &[String], echo: bool) -> Result<Vec<String>, String> {
-    let bytecode = compile_to_bytecode(path, args)?;
+    let bytecode = compile_user_program(path, args)?;
     crate::native::run_bytecode(&bytecode, args, echo)
 }
 

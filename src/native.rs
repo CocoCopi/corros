@@ -11,6 +11,10 @@
 //! over the reference VM is speed: O(1) HashMap globals instead of a scanned
 //! list, a flat `Vec` stack, and a tight opcode loop.
 //!
+//! The instruction set is loaded once into compact form: operands are indices
+//! into per-program name/constant/closure pools, so the dispatch loop is a
+//! `Copy` fetch with zero allocation per instruction.
+//!
 //! The Corros VM (`src/vm.cor`) remains the reference implementation and is
 //! still exercised by `demo.sh` and the `--reference` flag.
 
@@ -24,26 +28,26 @@ use crate::seed::{
 };
 
 // ---------------------------------------------------------------------------
-// Instructions
+// Instructions (Copy — no allocation in the dispatch loop)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Op {
-    Const(Value),
+    Const(u32),
     Nil,
     True,
     False,
     Pop,
-    GetLocal(usize),
-    SetLocal(usize),
-    GetUpvalue(usize),
-    SetUpvalue(usize),
-    GetGlobal(String),
-    SetGlobal(String),
-    DefineGlobal(String),
+    GetLocal(u32),
+    SetLocal(u32),
+    GetUpvalue(u32),
+    SetUpvalue(u32),
+    GetGlobal(u32),
+    SetGlobal(u32),
+    DefineGlobal(u32),
     GetIndex,
     SetIndex,
-    GetField(String),
+    GetField(u32),
     Add,
     Sub,
     Mul,
@@ -58,25 +62,39 @@ enum Op {
     Ge,
     Neg,
     Not,
-    Jump(usize),
-    JumpIfFalse(usize),
-    Loop(usize),
-    Call(usize),
+    Jump(u32),
+    JumpIfFalse(u32),
+    Loop(u32),
+    Call(u32),
     Return,
-    Closure { fid: usize, upvals: Vec<(bool, usize)> },
+    Closure(u32),
     CloseUpvalue,
     Rotate3,
-    BuildList(usize),
-    BuildMap(usize),
+    BuildList(u32),
+    BuildMap(u32),
     BuildRange(bool),
 }
 
-#[derive(Debug)]
 struct Function {
     name: String,
     arity: usize,
     instrs: Vec<Op>,
 }
+
+struct Program {
+    fns: Vec<Function>,
+    /// Interned names for Get/Set/DefineGlobal and GetField, with a
+    /// precomputed hash so global lookups never re-hash the string.
+    names: Vec<(Rc<str>, u64)>,
+    /// Constants referenced by `Const`.
+    constants: Vec<Value>,
+    /// Closure descriptors: (function id, captured (is_local, index) pairs).
+    closures: Vec<(u32, Vec<(bool, u32)>)>,
+}
+
+// ---------------------------------------------------------------------------
+// Bytecode loading
+// ---------------------------------------------------------------------------
 
 /// Reverse of `compiler.cor`'s `escape_str`: turn `"a\nb"` back into a real
 /// string. Mirrors `vm.cor`'s `unescape` exactly.
@@ -119,26 +137,54 @@ fn parse_literal(s: &str) -> Result<Value, String> {
     }
 }
 
-fn parse_num(what: &str, s: &str) -> Result<usize, String> {
+fn parse_num(what: &str, s: &str) -> Result<u32, String> {
     s.trim()
-        .parse::<usize>()
+        .parse::<u32>()
         .map_err(|_| format!("bad {} '{}' in bytecode", what, s))
 }
 
-fn parse_instr(line: &str) -> Result<Op, String> {
+/// FNV-1a hash of a string — computed once at load time, so the hot loop only
+/// hashes 8-byte keys.
+fn hash_str(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Pools for interning operands while loading.
+struct Pools {
+    names: Vec<(Rc<str>, u64)>,
+    constants: Vec<Value>,
+    closures: Vec<(u32, Vec<(bool, u32)>)>,
+}
+
+impl Pools {
+    fn name(&mut self, s: &str) -> u32 {
+        if let Some(i) = self.names.iter().position(|(n, _)| &**n == s) {
+            return i as u32;
+        }
+        self.names.push((s.into(), hash_str(s)));
+        (self.names.len() - 1) as u32
+    }
+}
+
+fn parse_instr(line: &str, pools: &mut Pools) -> Result<Op, String> {
     let mut parts = line.splitn(2, ' ');
     let op = parts.next().unwrap_or("");
     let rest = parts.next().unwrap_or("");
     match op {
-        "CONST" => Ok(Op::Const(parse_literal(rest)?)),
-        "GET_GLOBAL" | "SET_GLOBAL" | "DEFINE_GLOBAL" | "GET_FIELD" => {
-            Ok(match op {
-                "GET_GLOBAL" => Op::GetGlobal(rest.to_string()),
-                "SET_GLOBAL" => Op::SetGlobal(rest.to_string()),
-                "DEFINE_GLOBAL" => Op::DefineGlobal(rest.to_string()),
-                _ => Op::GetField(rest.to_string()),
-            })
+        "CONST" => {
+            let v = parse_literal(rest)?;
+            pools.constants.push(v);
+            Ok(Op::Const((pools.constants.len() - 1) as u32))
         }
+        "GET_GLOBAL" => Ok(Op::GetGlobal(pools.name(rest))),
+        "SET_GLOBAL" => Ok(Op::SetGlobal(pools.name(rest))),
+        "DEFINE_GLOBAL" => Ok(Op::DefineGlobal(pools.name(rest))),
+        "GET_FIELD" => Ok(Op::GetField(pools.name(rest))),
         "GET_LOCAL" => Ok(Op::GetLocal(parse_num("index", rest)?)),
         "SET_LOCAL" => Ok(Op::SetLocal(parse_num("index", rest)?)),
         "GET_UPVALUE" => Ok(Op::GetUpvalue(parse_num("index", rest)?)),
@@ -161,7 +207,8 @@ fn parse_instr(line: &str) -> Result<Op, String> {
                 upvals.push((is_local, idx));
                 k += 2;
             }
-            Ok(Op::Closure { fid, upvals })
+            pools.closures.push((fid, upvals));
+            Ok(Op::Closure((pools.closures.len() - 1) as u32))
         }
         "BUILD_RANGE" => Ok(Op::BuildRange(rest == "inclusive")),
         "NIL" => Ok(Op::Nil),
@@ -191,11 +238,21 @@ fn parse_instr(line: &str) -> Result<Op, String> {
     }
 }
 
-/// Parse the textual bytecode that `compiler.cor` prints into functions.
+/// Parse the textual bytecode that `compiler.cor` prints into a [`Program`].
 /// Mirrors `vm.cor`'s `parse_bc`: `FUNCTION <id> <name> <arity>` blocks ended
 /// by `ENDFN`, `MAIN` headers skipped.
-fn load_bytecode(text: &str) -> Result<Vec<Function>, String> {
-    let mut fns: Vec<Function> = Vec::new();
+fn load_program(text: &str) -> Result<Program, String> {
+    let mut prog = Program {
+        fns: Vec::new(),
+        names: Vec::new(),
+        constants: Vec::new(),
+        closures: Vec::new(),
+    };
+    let mut pools = Pools {
+        names: Vec::new(),
+        constants: Vec::new(),
+        closures: Vec::new(),
+    };
     let mut current: Option<(String, usize, Vec<Op>)> = None;
     for line in text.lines() {
         let line = line.trim_end();
@@ -204,16 +261,16 @@ fn load_bytecode(text: &str) -> Result<Vec<Function>, String> {
         }
         if let Some(rest) = line.strip_prefix("FUNCTION ") {
             if let Some((name, arity, instrs)) = current.take() {
-                fns.push(Function { name, arity, instrs });
+                prog.fns.push(Function { name, arity, instrs });
             }
             let mut p = rest.splitn(3, ' ');
-            let id = parse_num("function id", p.next().unwrap_or(""))?;
+            let id = parse_num("function id", p.next().unwrap_or(""))? as usize;
             let name = p.next().unwrap_or("<anonymous>").to_string();
-            let arity = parse_num("arity", p.next().unwrap_or(""))?;
-            if id != fns.len() {
+            let arity = parse_num("arity", p.next().unwrap_or(""))? as usize;
+            if id != prog.fns.len() {
                 return Err(format!(
                     "bytecode: function ids out of order (expected {}, got {})",
-                    fns.len(),
+                    prog.fns.len(),
                     id
                 ));
             }
@@ -222,7 +279,7 @@ fn load_bytecode(text: &str) -> Result<Vec<Function>, String> {
         }
         if line == "ENDFN" {
             if let Some((name, arity, instrs)) = current.take() {
-                fns.push(Function { name, arity, instrs });
+                prog.fns.push(Function { name, arity, instrs });
             }
             continue;
         }
@@ -230,16 +287,19 @@ fn load_bytecode(text: &str) -> Result<Vec<Function>, String> {
             continue;
         }
         if let Some((_, _, instrs)) = current.as_mut() {
-            instrs.push(parse_instr(line)?);
+            instrs.push(parse_instr(line, &mut pools)?);
         }
     }
     if let Some((name, arity, instrs)) = current.take() {
-        fns.push(Function { name, arity, instrs });
+        prog.fns.push(Function { name, arity, instrs });
     }
-    if fns.is_empty() {
+    if prog.fns.is_empty() {
         return Err("bytecode: no functions found".to_string());
     }
-    Ok(fns)
+    prog.names = pools.names;
+    prog.constants = pools.constants;
+    prog.closures = pools.closures;
+    Ok(prog)
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +308,7 @@ fn load_bytecode(text: &str) -> Result<Vec<Function>, String> {
 
 struct Frame {
     fid: usize,
-    pc: usize,
+    pc: u32,
     /// Stack index of local slot 0 (the first argument).
     slots_base: usize,
     /// Stack index the callee was pushed at; Return truncates back to here.
@@ -260,10 +320,12 @@ struct Frame {
 }
 
 pub struct NativeVm {
-    fns: Vec<Function>,
+    prog: Program,
     stack: Vec<Value>,
     frames: Vec<Frame>,
-    globals: HashMap<String, Value>,
+    /// Globals keyed by the precomputed name hash; the stored name disambiguates
+    /// hash collisions.
+    globals: HashMap<u64, (Rc<str>, Value)>,
     output: Vec<String>,
     echo: bool,
     start: Instant,
@@ -277,12 +339,16 @@ impl NativeVm {
             "yank", "vouch", "mcall",
         ];
         for name in names {
+            let key: Rc<str> = name.into();
             self.globals.insert(
-                name.to_string(),
-                Value::List(Rc::new(RefCell::new(vec![
-                    Value::Str("blt".into()),
-                    Value::Str(name.into()),
-                ]))),
+                hash_str(&key),
+                (
+                    key.clone(),
+                    Value::List(Rc::new(RefCell::new(vec![
+                        Value::Str("blt".into()),
+                        Value::Str(name.into()),
+                    ]))),
+                ),
             );
         }
     }
@@ -316,11 +382,11 @@ impl NativeVm {
                         Value::Num(n) => *n as usize,
                         _ => return Err("corrupt closure value".to_string()),
                     };
-                    let arity = self.fns[fid].arity;
+                    let arity = self.prog.fns[fid].arity;
                     if argc != arity {
                         return Err(format!(
                             "function '{}' expects {} argument(s) but got {}",
-                            self.fns[fid].name, arity, argc
+                            self.prog.fns[fid].name, arity, argc
                         ));
                     }
                     if self.frames.len() > 5000 {
@@ -355,8 +421,8 @@ impl NativeVm {
                     self.stack.truncate(callee_idx);
                     let m = self
                         .globals
-                        .get("$method")
-                        .cloned()
+                        .get(&hash_str("$method"))
+                        .map(|(_, v)| v.clone())
                         .ok_or("internal error: $method is not defined (prelude missing)")?;
                     self.stack.push(m);
                     self.stack.push(receiver);
@@ -423,16 +489,26 @@ impl NativeVm {
         Ok(())
     }
 
+    #[inline]
+    fn push_binop(&mut self, op: BinOp) -> Result<(), String> {
+        let b = self.stack.pop().unwrap();
+        let a = self.stack.pop().unwrap();
+        let r = binary_op(op, &a, &b)?;
+        self.stack.push(r);
+        Ok(())
+    }
+
     pub fn execute(&mut self) -> Result<(), String> {
         while !self.frames.is_empty() {
             let (fid, pc) = {
-                let top = self.frames.last().unwrap();
-                (top.fid, top.pc)
+                let f = self.frames.last_mut().unwrap();
+                let p = f.pc;
+                f.pc = p + 1;
+                (f.fid, p)
             };
-            let op = self.fns[fid].instrs[pc].clone();
-            self.frames.last_mut().unwrap().pc = pc + 1;
+            let op = self.prog.fns[fid].instrs[pc as usize];
             match op {
-                Op::Const(v) => self.stack.push(v),
+                Op::Const(i) => self.stack.push(self.prog.constants[i as usize].clone()),
                 Op::Nil => self.stack.push(Value::Nil),
                 Op::True => self.stack.push(Value::Bool(true)),
                 Op::False => self.stack.push(Value::Bool(false)),
@@ -441,10 +517,11 @@ impl NativeVm {
                 }
                 Op::GetLocal(i) => {
                     let base = self.frames.last().unwrap().slots_base;
-                    let v = self.stack[base + i].clone();
+                    let v = self.stack[base + i as usize].clone();
                     self.stack.push(v);
                 }
                 Op::SetLocal(i) => {
+                    let i = i as usize;
                     let v = self.stack[self.stack.len() - 1].clone();
                     let fr = self.frames.last_mut().unwrap();
                     self.stack[fr.slots_base + i] = v.clone();
@@ -453,7 +530,7 @@ impl NativeVm {
                     }
                 }
                 Op::GetUpvalue(i) => {
-                    let up = self.frames.last().unwrap().upvals[i].clone();
+                    let up = self.frames.last().unwrap().upvals[i as usize].clone();
                     match &up {
                         Value::List(c) => self.stack.push(c.borrow()[0].clone()),
                         _ => return Err("corrupt upvalue cell".to_string()),
@@ -462,22 +539,27 @@ impl NativeVm {
                 Op::SetUpvalue(i) => {
                     let v = self.stack[self.stack.len() - 1].clone();
                     let fr = self.frames.last_mut().unwrap();
-                    match &fr.upvals[i] {
+                    match &fr.upvals[i as usize] {
                         Value::List(c) => c.borrow_mut()[0] = v,
                         _ => return Err("corrupt upvalue cell".to_string()),
                     }
                 }
-                Op::GetGlobal(name) => match self.globals.get(&name) {
-                    Some(v) => self.stack.push(v.clone()),
-                    None => return Err(format!("undefined variable '{}'", name)),
-                },
-                Op::SetGlobal(name) => {
-                    let v = self.stack[self.stack.len() - 1].clone();
-                    self.globals.insert(name, v);
+                Op::GetGlobal(i) => {
+                    let (name, h) = &self.prog.names[i as usize];
+                    match self.globals.get(h) {
+                        Some((k, v)) if k == name => self.stack.push(v.clone()),
+                        _ => return Err(format!("undefined variable '{}'", name)),
+                    }
                 }
-                Op::DefineGlobal(name) => {
+                Op::SetGlobal(i) => {
+                    let v = self.stack[self.stack.len() - 1].clone();
+                    let (name, h) = self.prog.names[i as usize].clone();
+                    self.globals.insert(h, (name, v));
+                }
+                Op::DefineGlobal(i) => {
                     let v = self.stack.pop().unwrap();
-                    self.globals.insert(name, v);
+                    let (name, h) = self.prog.names[i as usize].clone();
+                    self.globals.insert(h, (name, v));
                 }
                 Op::GetIndex => {
                     let key = self.stack.pop().unwrap();
@@ -492,50 +574,20 @@ impl NativeVm {
                     index_set(&container, &key, &value)?;
                     self.stack.push(value);
                 }
-                Op::GetField(name) => {
+                Op::GetField(i) => {
                     let receiver = self.stack.pop().unwrap();
                     self.stack.push(Value::List(Rc::new(RefCell::new(vec![
                         Value::Str("method".into()),
-                        Value::Str(name.into()),
+                        Value::Str(self.prog.names[i as usize].0.clone()),
                         receiver,
                     ]))));
                 }
-                Op::Add => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Add, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Sub => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Sub, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Mul => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Mul, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Div => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Div, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Mod => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Mod, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Power => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Power, &a, &b)?;
-                    self.stack.push(r);
-                }
+                Op::Add => self.push_binop(BinOp::Add)?,
+                Op::Sub => self.push_binop(BinOp::Sub)?,
+                Op::Mul => self.push_binop(BinOp::Mul)?,
+                Op::Div => self.push_binop(BinOp::Div)?,
+                Op::Mod => self.push_binop(BinOp::Mod)?,
+                Op::Power => self.push_binop(BinOp::Power)?,
                 Op::Eq => {
                     let b = self.stack.pop().unwrap();
                     let a = self.stack.pop().unwrap();
@@ -546,30 +598,10 @@ impl NativeVm {
                     let a = self.stack.pop().unwrap();
                     self.stack.push(Value::Bool(!value_eq(&a, &b)));
                 }
-                Op::Lt => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Less, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Le => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::LessEqual, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Gt => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::Greater, &a, &b)?;
-                    self.stack.push(r);
-                }
-                Op::Ge => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    let r = binary_op(BinOp::GreaterEqual, &a, &b)?;
-                    self.stack.push(r);
-                }
+                Op::Lt => self.push_binop(BinOp::Less)?,
+                Op::Le => self.push_binop(BinOp::LessEqual)?,
+                Op::Gt => self.push_binop(BinOp::Greater)?,
+                Op::Ge => self.push_binop(BinOp::GreaterEqual)?,
                 Op::Neg => {
                     let v = self.stack.pop().unwrap();
                     match v {
@@ -594,16 +626,17 @@ impl NativeVm {
                     }
                 }
                 Op::Loop(target) => self.frames.last_mut().unwrap().pc = target,
-                Op::Call(n) => self.do_call(n)?,
+                Op::Call(n) => self.do_call(n as usize)?,
                 Op::Return => self.do_return(),
-                Op::Closure { fid, upvals } => {
+                Op::Closure(ci) => {
+                    let (fid, descs) = self.prog.closures[ci as usize].clone();
                     let fr_upvals = self.frames.last().unwrap().upvals.clone();
-                    let mut captured: Vec<Value> = Vec::with_capacity(upvals.len());
-                    for (is_local, idx) in upvals {
+                    let mut captured: Vec<Value> = Vec::with_capacity(descs.len());
+                    for (is_local, idx) in descs {
                         if is_local {
-                            captured.push(self.capture_cell(idx));
+                            captured.push(self.capture_cell(idx as usize));
                         } else {
-                            captured.push(fr_upvals[idx].clone());
+                            captured.push(fr_upvals[idx as usize].clone());
                         }
                     }
                     self.stack.push(Value::List(Rc::new(RefCell::new(vec![
@@ -623,18 +656,18 @@ impl NativeVm {
                     self.stack.push(c);
                     self.stack.push(a);
                 }
-                Op::BuildList(n) => self.build_list(n),
-                Op::BuildMap(n) => self.build_map(n)?,
+                Op::BuildList(n) => self.build_list(n as usize),
+                Op::BuildMap(n) => self.build_map(n as usize)?,
                 Op::BuildRange(inclusive) => {
                     let end = self.stack.pop().unwrap();
                     let start = self.stack.pop().unwrap();
                     match (&start, &end) {
                         (Value::Num(s), Value::Num(e)) => {
-                            self.stack.push(Value::Range {
+                            self.stack.push(Value::Range(Rc::new(crate::seed::RangeData {
                                 start: *s,
                                 end: if inclusive { *e + 1.0 } else { *e },
                                 inclusive: false,
-                            });
+                            })));
                         }
                         _ => {
                             return Err(format!(
@@ -654,12 +687,12 @@ impl NativeVm {
 /// Run a compiled program (the textual bytecode `compiler.cor` emits) at
 /// native speed. Returns the lines printed by `speak`.
 pub fn run_bytecode(text: &str, args: &[String], echo: bool) -> Result<Vec<String>, String> {
-    let fns = load_bytecode(text)?;
+    let prog = load_program(text)?;
     let mut vm = NativeVm {
-        fns,
-        stack: Vec::new(),
-        frames: Vec::new(),
-        globals: HashMap::new(),
+        prog,
+        stack: Vec::with_capacity(256),
+        frames: Vec::with_capacity(64),
+        globals: HashMap::with_capacity(64),
         output: Vec::new(),
         echo,
         start: Instant::now(),
@@ -668,7 +701,8 @@ pub fn run_bytecode(text: &str, args: &[String], echo: bool) -> Result<Vec<Strin
     let prog_args = Value::List(Rc::new(RefCell::new(
         args.iter().map(|s| Value::Str(s.as_str().into())).collect(),
     )));
-    vm.globals.insert("args".to_string(), prog_args);
+    let args_key: Rc<str> = "args".into();
+    vm.globals.insert(hash_str(&args_key), (args_key, prog_args));
     vm.frames.push(Frame {
         fid: 0,
         pc: 0,

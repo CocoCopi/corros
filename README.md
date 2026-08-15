@@ -72,19 +72,23 @@ keep going **onward**.
   detection.
 - **Clean, dependency-free Rust** — one crate, zero external dependencies.
 
-## Install (one line)
+## Install — one line
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | sh
 ```
 
-The installer downloads a prebuilt binary from the latest GitHub release
-(Linux, macOS, Windows — x86_64 and ARM64); if none exists for your platform
-it falls back to building from source. Both the binary and the Corros-written
-standard library (`prelude.cor`) are installed, so `corros` works from
-anywhere.
+That's it. It downloads a prebuilt binary for your platform (Linux, macOS,
+Windows — x86_64 and ARM64), or builds from source if no prebuilt exists, and
+installs both `corros` and the Corros-written standard library (`prelude.cor`).
 
-**From source** (requires Rust 1.70+):
+**Build from source — one line** (requires Rust 1.70+):
+
+```bash
+git clone https://github.com/CocoCopi/corros.git && cd corros && bash install.sh
+```
+
+Or build and run in place:
 
 ```bash
 cargo build --release
@@ -227,8 +231,9 @@ internals). What's left of Rust is the bootstrap seed and the native executor
       implements the list and string methods in Corros, with native fallbacks
       only where host primitives are required
 - [x] **Native execution speed** — the native executor (`src/native.rs`) runs
-      compiled bytecode at interpreter speed: `fib(30)` in ~1.4s,
-      a 2.7M-iteration loop in ~1.4s
+      compiled bytecode at interpreter speed: `fib(30)` in ~1s and a
+      2.7M-iteration loop in ~1s (up from 21 minutes and 53 minutes), with the
+      compiled compiler cached so startup skips re-compilation
 - [ ] Performance beyond: register-based VM, JIT, or ahead-of-time compilation
 
 ## Contributing

@@ -191,8 +191,9 @@ Rust side (`src/*.rs`):
   `lookup_method`).
 - `native.rs` — the native executor: parses the textual bytecode
   `compiler.cor` emits (`FUNCTION`/`ENDFN` blocks, one instruction per line)
-  and runs it at native speed — `fib(30)` in ~1.4s. This is the default
-  execution path.
+  and runs it at native speed — `fib(30)` in ~1s. This is the default
+  execution path; the compiled compiler itself is cached (in the OS temp
+  dir, keyed on `compiler.cor` + `prelude.cor`) so startup skips the seed.
 - `lexer.rs` — the seed's tokenizer (reads the Corros sources).
 - `main.rs` — CLI: `corros file.cor` (compile → native executor),
   `--dump` (print bytecode), `--run-bc` (run bytecode natively),
