@@ -2145,16 +2145,50 @@ pub fn run_bytecode_on_native(text: &str, args: &[String], echo: bool) -> Result
 /// Execute pre-compiled bytecode text through the Corros-written VM
 /// (`src/vm.cor`), for the self-hosting demo.
 pub fn run_bytecode_on_reference(text: &str, args: &[String], echo: bool) -> Result<Vec<String>, String> {
-    let vm_cor = find_src("vm.cor")
-        .ok_or_else(|| "corros: cannot find src/vm.cor (the Corros-written VM)".to_string())?;
     let bc_path = write_temp("corros-bc", text)?;
     let mut vm_args = vec![bc_path.display().to_string()];
     vm_args.extend(args.iter().cloned());
-    let mut vm = Interpreter::new(vm_args);
-    vm.echo = echo;
-    let result = vm.run_file(&vm_cor);
+    // Run the *compiled* VM on the native executor — the same "compiled VM
+    // runs compiled code" step demo.sh proves — instead of tree-walking
+    // vm.cor's source through the seed. The reference interpreter is then
+    // only as slow as its own Corros-written dispatch, not the seed's.
+    let vm_bc = get_vm_bytecode()?;
+    let result = crate::native::run_bytecode(&vm_bc, &vm_args, echo);
     let _ = std::fs::remove_file(&bc_path);
     result
+}
+
+/// Content-addressed cache path for the compiled VM (`src/vm.cor` compiled
+/// with the prelude, by the cached compiled compiler).
+fn vm_cache_path() -> Result<PathBuf, String> {
+    let vm_cor = find_src("vm.cor")
+        .ok_or_else(|| "corros: cannot find src/vm.cor (the Corros-written VM)".to_string())?;
+    let mut hash = fnv1a(&std::fs::read(&vm_cor).map_err(|e| e.to_string())?);
+    if let Some(p) = find_src("prelude.cor") {
+        if let Ok(psrc) = std::fs::read(&p) {
+            hash ^= fnv1a(&psrc).rotate_left(32);
+        }
+    }
+    if let Some(p) = find_src("compiler.cor") {
+        if let Ok(csrc) = std::fs::read(&p) {
+            hash ^= fnv1a(&csrc).rotate_left(16);
+        }
+    }
+    Ok(std::env::temp_dir().join(format!("corros-vm-{:016x}.bc", hash)))
+}
+
+/// The compiled VM bytecode, cached so the reference path skips recompiling
+/// vm.cor on every run.
+fn get_vm_bytecode() -> Result<String, String> {
+    let cache = vm_cache_path()?;
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        return Ok(text);
+    }
+    let vm_cor = find_src("vm.cor")
+        .ok_or_else(|| "corros: cannot find src/vm.cor (the Corros-written VM)".to_string())?;
+    let bytecode = compile_user_program(&vm_cor.display().to_string(), &[])?;
+    let _ = std::fs::write(&cache, &bytecode);
+    Ok(bytecode)
 }
 
 fn run_chain(path: &str, args: &[String]) -> Result<Vec<String>, String> {

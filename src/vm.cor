@@ -126,50 +126,43 @@ craft parse_bc(lines) {
 // Globals
 // ---------------------------------------------------------------------------
 
-globals = []   // [name, value] pairs
+// Globals are a map (name -> value): O(1) hash lookup instead of a linear
+// scan per access — the name-based lookup that used to dominate.
+globals = {}
 
 craft global_get(name) {
-  forge i = 0
-  whilst i < size(globals) {
-    when globals[i][0] == name { return globals[i][1] }
-    i = i + 1
-  }
+  when globals.holds(name) { return globals[name] }
   flaw("undefined variable '" + name + "'")
   return nil
 }
 
 craft global_set(name, v) {
-  forge i = 0
-  whilst i < size(globals) {
-    when globals[i][0] == name { globals[i][1] = v; return }
-    i = i + 1
-  }
-  shove(globals, [name, v])
+  globals[name] = v
 }
 
 craft install_builtins() {
-  shove(globals, ["size", ["blt", "size"]])
-  shove(globals, ["nature", ["blt", "nature"]])
-  shove(globals, ["str", ["blt", "str"]])
-  shove(globals, ["num", ["blt", "num"]])
-  shove(globals, ["int", ["blt", "int"]])
-  shove(globals, ["bool", ["blt", "bool"]])
-  shove(globals, ["abs", ["blt", "abs"]])
-  shove(globals, ["root", ["blt", "root"]])
-  shove(globals, ["least", ["blt", "least"]])
-  shove(globals, ["greatest", ["blt", "greatest"]])
-  shove(globals, ["tick", ["blt", "tick"]])
-  shove(globals, ["span", ["blt", "span"]])
-  shove(globals, ["speak", ["blt", "speak"]])
-  shove(globals, ["hear", ["blt", "hear"]])
-  shove(globals, ["read", ["blt", "read"]])
-  shove(globals, ["readlines", ["blt", "readlines"]])
-  shove(globals, ["file_exists", ["blt", "file_exists"]])
-  shove(globals, ["flaw", ["blt", "flaw"]])
-  shove(globals, ["shove", ["blt", "shove"]])
-  shove(globals, ["yank", ["blt", "yank"]])
-  shove(globals, ["vouch", ["blt", "vouch"]])
-  shove(globals, ["mcall", ["blt", "mcall"]])
+  globals["size"] = ["blt", "size"]
+  globals["nature"] = ["blt", "nature"]
+  globals["str"] = ["blt", "str"]
+  globals["num"] = ["blt", "num"]
+  globals["int"] = ["blt", "int"]
+  globals["bool"] = ["blt", "bool"]
+  globals["abs"] = ["blt", "abs"]
+  globals["root"] = ["blt", "root"]
+  globals["least"] = ["blt", "least"]
+  globals["greatest"] = ["blt", "greatest"]
+  globals["tick"] = ["blt", "tick"]
+  globals["span"] = ["blt", "span"]
+  globals["speak"] = ["blt", "speak"]
+  globals["hear"] = ["blt", "hear"]
+  globals["read"] = ["blt", "read"]
+  globals["readlines"] = ["blt", "readlines"]
+  globals["file_exists"] = ["blt", "file_exists"]
+  globals["flaw"] = ["blt", "flaw"]
+  globals["shove"] = ["blt", "shove"]
+  globals["yank"] = ["blt", "yank"]
+  globals["vouch"] = ["blt", "vouch"]
+  globals["mcall"] = ["blt", "mcall"]
 }
 
 // ---------------------------------------------------------------------------
@@ -514,11 +507,11 @@ craft vm_run() {
 fns = parse_bc(readlines(args[0]))
 stack = []
 frames = []
-globals = []
+globals = {}
 install_builtins()
 prog_args = []
 i = 1
 whilst i < size(args) { shove(prog_args, args[i]); i = i + 1 }
-shove(globals, ["args", prog_args])
+globals["args"] = prog_args
 shove(frames, [0, 0, 0, 0, [], []])
 vm_run()

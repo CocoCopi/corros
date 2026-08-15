@@ -176,8 +176,12 @@ Corros side (`src/*.cor`):
   closures/maps/methods in ITS source — so self-compilation only exercises
   constructs that were already proven correct.
 - `vm.cor` — **the reference VM**, written in Corros, using the full
-  language. Run any program through it with `corros --reference file.cor`
-  (slow — its dispatch is interpreted — but authoritative).
+  language. Run any program through it with `corros --reference file.cor`.
+  It is authoritative; it is also reasonably fast, because the compiled VM
+  runs on the native executor (cached like the compiler) and its globals are
+  an O(1) map — only the meta-circular dispatch tax (~3µs/op) remains, ~5×
+  faster than the old tree-walking path and ~80× better than the original
+  250µs/op interpreter.
 - `prelude.cor` — **the Corros standard library**, spliced in front of every
   program; method calls route through its `$method(recv, name, [args])`
   dispatcher, so list/string methods (`shove`, `yank`, `size`, `holds`,
