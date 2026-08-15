@@ -2,8 +2,32 @@
 //!
 //! Handles numbers (integers, floats, exponents), strings with escapes,
 //! comments (`//` and `/* */`), identifiers, keywords, and all operators.
+//!
+//! This module also owns the [`CompileError`] type (the seed's only error
+//! type): error *rendering* lives in the Corros-written CLI (`src/cli.cor`),
+//! so the seed only needs the raw fields.
 
-use crate::error::{CompileError, CompileResult};
+/// An error produced while lexing, parsing, or compiling Corros source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompileError {
+    pub message: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl CompileError {
+    pub fn new(message: impl Into<String>, file: &str, line: u32, column: u32) -> Self {
+        CompileError {
+            message: message.into(),
+            file: file.to_string(),
+            line,
+            column,
+        }
+    }
+}
+
+pub type CompileResult<T> = Result<T, CompileError>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {

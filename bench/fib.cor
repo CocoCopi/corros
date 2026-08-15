@@ -1,0 +1,6 @@
+// fib.cor — recursion and conditionals. Prints 832040 for fib(30).
+craft fib(n) {
+  when n < 2 { return n }
+  return fib(n - 1) + fib(n - 2)
+}
+speak(fib(30))

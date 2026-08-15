@@ -1,0 +1,8 @@
+// loop.cor — 2,700,000-iteration counter loop. Prints 3644998650000.
+forge n = 0
+forge total = 0
+whilst n < 2700000 {
+  total = total + n
+  n = n + 1
+}
+speak(total)

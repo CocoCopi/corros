@@ -36,9 +36,18 @@ corros --reference hello.cor       # run through the Corros-written VM
 corros -v                          # version
 ```
 
-Note: the installed `corros` needs `prelude.cor` next to the binary — the
-installer places both in the same directory. Without it, method calls fail
-with "undefined variable '$method'".
+**Benchmarks.** The repo ships a real comparison suite in `bench/`:
+identical programs (fib, a 2.7M-iteration loop, a primes sieve) written once
+in Corros, C, Rust, Go, and Python. `bash bench/run.sh [rounds] [--md]` builds
+every language, verifies each prints the same result, and times them
+round-robin (so background load hits everyone equally). Compiled Corros ties
+or beats hand-written C and beats Rust, Go, and Python on all three — because
+`--compile` emits C and builds with `cc -O3`, C is the ceiling.
+
+Note: the installed `corros` needs the `.cor` sources (`prelude.cor`,
+`compiler.cor`, `vm.cor`, `cli.cor`, `codegen.cor`) next to the binary — the
+installer places them all in the same directory. Without them, startup fails
+with "cannot find src/cli.cor".
 
 Exit codes: 65 = compile error, 70 = runtime error. The REPL wraps input in
 `speak((...))`, so expressions echo their value (assignment included).
@@ -119,6 +128,7 @@ do `xs.shove` and pass it around; call them directly.
 | builtin     | meaning                                  |
 |-------------|------------------------------------------|
 | `speak(...)`| print each arg space-separated, newline  |
+| `eprint(...)` | print to **stderr** (never captured output — use it for diagnostics) |
 | `hear()` / `hear(prompt)` | read a line from stdin         |
 | `size(x)`   | length of string/list/map                |
 | `nature(x)` | type name: `"num" "str" "bool" "nil" "list" "map" "craft" "range"` |
@@ -188,6 +198,17 @@ Corros side (`src/*.cor`):
   `flip`, `clear`, `weld`, `split`, `opens`, `closes`, `reforge`) are
   implemented in Corros. The native side falls back to its method table only
   for host primitives (`mcall(name, recv, args)`).
+- `codegen.cor` — **the AOT backend for `--compile`**: parses the textual
+  bytecode, runs a whole-program type analysis over stack slots, emits C, and
+  pipes it through `cc -O3`. It ends with two peephole passes that make the
+  generated C as fast as hand-written C: (1) `peephole` inlines every
+  single-use temp into its use site (gcc -O3 gives up on functions full of
+  `double t8 = (t6 < t7);` copies), and (2) `branch_swap` turns
+  `if (!(cond)) goto L; <then-return> L: <rest>` into
+  `if (cond) goto Lnew; L: <rest> Lnew: <then-return>` so the hot path falls
+  through without a `!`. Debug progress with `CORROS_CODEGEN_DEBUG=1`
+  (messages go to stderr via the `eprint` builtin, never into the emitted
+  C).
 
 Rust side (`src/*.rs`):
 

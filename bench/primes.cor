@@ -1,0 +1,20 @@
+// primes.cor — trial-division primality test below 100,000.
+// Prints "9592 454396537" (count, sum).
+craft is_prime(n) {
+  when n < 2 { return false }
+  forge d = 2
+  whilst d * d <= n {
+    when n % d == 0 { return false }
+    d = d + 1
+  }
+  return true
+}
+
+forge count = 0
+forge sum = 0
+forge i = 2
+whilst i < 100000 {
+  when is_prime(i) { count = count + 1; sum = sum + i }
+  i = i + 1
+}
+speak(count, sum)

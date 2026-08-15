@@ -783,7 +783,7 @@ impl Interpreter {
 
     fn install_builtins(&mut self) {
         let names = [
-            "speak", "hear", "size", "nature", "str", "num", "int", "bool", "abs",
+            "speak", "eprint", "hear", "size", "nature", "str", "num", "int", "bool", "abs",
             "root", "least", "greatest", "tick", "span", "vouch", "flaw", "read",
             "readlines", "shove", "yank", "file_exists", "mcall",
         ];
@@ -1321,6 +1321,13 @@ pub(crate) fn native_builtin(
             if echo {
                 println!("{}", line);
             }
+            Ok(Value::Nil)
+        }
+        "eprint" => {
+            // Write to stderr so diagnostics never pollute captured output
+            // (e.g. the C source emitted by `--compile`).
+            let parts: Vec<String> = args.iter().map(to_string).collect();
+            eprintln!("{}", parts.join(" "));
             Ok(Value::Nil)
         }
             "hear" => {

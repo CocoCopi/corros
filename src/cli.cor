@@ -64,7 +64,7 @@ else when args[0] == "--compile" {
   when size(args) < 2 { usage() }
   else {
     forge out = native_compile(args[1], rest_of(2))
-    speak("compiled -> " + out)
+    eprint("compiled -> " + out)
   }
 }
 else { run(args[0], rest_of(1)) }
