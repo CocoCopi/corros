@@ -261,9 +261,13 @@ library, and the CLI — is Corros.
       compiled compiler cached so startup skips re-compilation
 - [x] **Ahead-of-time compilation** — `corros --compile` types the bytecode
       (numbers, strings, booleans, ranges, functions), emits C, and builds a
-      native binary with `cc -O3`. Measured on an ARM64 box, `fib(30)` runs in
-      0.030s and a 2.7M-iteration loop in 0.021s — **faster than Go** (0.057s /
-      0.051s) and within a whisker of hand-written Rust (0.029s / 0.015s).
+      native binary with `cc -O3`. Measured on an ARM64 box with the same
+      number type (`f64`) everywhere, `fib(30)` runs in ~0.025s — **faster
+      than both Go** (~0.063s) **and Rust** (~0.038s) — and a 2.7M-iteration
+      loop in ~0.02s, also ahead of Go and tied with Rust. (The remaining
+      Rust in `src/` — the seed, the native executor — is the physical
+      bootstrap and the accelerator; a language's first compiler cannot be
+      written in itself, any more than rustc's first compiler could be Rust.)
 - [ ] Beyond: a register-based VM or a true JIT for the dynamic features
 
 ## Contributing
