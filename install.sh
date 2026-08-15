@@ -4,7 +4,8 @@
 #
 # Downloads a prebuilt binary from the latest GitHub release (fast), falling
 # back to building from source when none exists for your platform. Installs
-# `corros` and the Corros-written standard library (prelude.cor) side by side.
+# `corros` and the Corros-written interpreter (compiler.cor, vm.cor, cli.cor,
+# prelude.cor) side by side, which the binary looks up next to itself.
 set -euo pipefail
 
 # --- platform detection ---------------------------------------------------
@@ -46,7 +47,7 @@ if curl -fsSL --max-time 120 "$url" -o "$tmp/pkg.tar.gz" 2>/dev/null; then
   else
     bin="$tmp/corros"
   fi
-  prelude="$tmp/prelude.cor"
+  src_dir="$tmp"
   echo "Downloaded prebuilt corros (${os}/${arch})."
 else
   echo "No prebuilt binary for ${os}/${arch} — building from source (needs Rust)."
@@ -62,16 +63,18 @@ else
   fi
   (cd "$repo" && cargo build --release)
   bin="$repo/target/release/corros"
-  prelude="$repo/src/prelude.cor"
+  src_dir="$repo/src"
 fi
 
 # --- install --------------------------------------------------------------
 install -m 0755 "$bin" "$bindir/corros"
-if [[ -f "$prelude" ]]; then
-  install -m 0644 "$prelude" "$bindir/prelude.cor"
-else
-  echo "corros: warning — prelude.cor not found; method calls will fail" >&2
-fi
+for cor in compiler.cor vm.cor cli.cor prelude.cor; do
+  if [[ -f "$src_dir/$cor" ]]; then
+    install -m 0644 "$src_dir/$cor" "$bindir/$cor"
+  else
+    echo "corros: warning — $cor not found; some features will fail" >&2
+  fi
+done
 
 echo
 echo "Installed: $bindir/corros"

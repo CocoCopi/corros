@@ -80,7 +80,8 @@ curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | s
 
 That's it. It downloads a prebuilt binary for your platform (Linux, macOS,
 Windows — x86_64 and ARM64), or builds from source if no prebuilt exists, and
-installs both `corros` and the Corros-written standard library (`prelude.cor`).
+installs `corros` alongside the Corros-written interpreter (`compiler.cor`,
+`vm.cor`, `cli.cor`, `prelude.cor`), which the binary loads from beside itself.
 
 **Build from source — one line** (requires Rust 1.70+):
 
@@ -141,8 +142,10 @@ Corros-written compiler) and a native executor (`src/native.rs`) that runs the
 compiler's bytecode at native speed. Your program is compiled by
 `src/compiler.cor` (written in Corros) and executed by the native executor;
 `src/vm.cor` is the reference interpreter, written in Corros, available via
-`--reference` and proven by `demo.sh`. The result: a language written in
-itself, with programs running at native-interpreter speed.
+`--reference` and proven by `demo.sh`. Even the **command-line interface is
+written in Corros** (`src/cli.cor`) — `main.rs` is a ~20-line launcher that
+just boots it. The result: a language written in itself, with programs running
+at native-interpreter speed.
 
 ## Self-hosting: the full interpreter, written in Corros
 
@@ -187,10 +190,20 @@ internals). What's left of Rust is the bootstrap seed and the native executor
 | `src/compiler.cor` | **the Corros compiler** — lexer + single-pass bytecode compiler, written in Corros |
 | `src/vm.cor`       | **the Corros VM** — the reference interpreter, written in Corros (`--reference`) |
 | `src/prelude.cor`  | **the Corros standard library** — list/string methods, `$method` dispatch |
+| `src/cli.cor`      | **the Corros CLI** — flags, `--dump`, `--run-bc`, `--reference`, the REPL |
 | `src/seed.rs`      | the bootstrap seed: a tree-walking interpreter that boots `compiler.cor` |
 | `src/native.rs`    | the native executor: runs the compiler's bytecode at native speed |
 | `src/lexer.rs`     | the seed's tokenizer (reads the Corros sources) |
 | `src/error.rs`     | compile-error formatting |
+| `src/main.rs`      | a thin launcher that boots `cli.cor` |
+
+**Why is there any Rust at all?** A language's *first* compiler must be written
+in some other language — rustc's was OCaml, CPython's is C. The seed is that
+first compiler: the minimal piece of native code that can run `compiler.cor`
+the first time. It cannot itself be written in Corros (nothing exists to run
+it yet), and the native executor is the accelerator that makes bytecode run
+fast. Everything a user can see and write — the compiler, the VM, the standard
+library, and the CLI — is Corros.
 
 ## Language reference (the short version)
 

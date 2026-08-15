@@ -337,6 +337,8 @@ impl NativeVm {
             "size", "nature", "str", "num", "int", "bool", "abs", "root", "least", "greatest",
             "tick", "span", "speak", "hear", "read", "readlines", "file_exists", "flaw", "shove",
             "yank", "vouch", "mcall",
+            // The CLI bridge (src/cli.cor).
+            "version", "run", "run_bc", "run_ref", "dump", "run_src_try",
         ];
         for name in names {
             let key: Rc<str> = name.into();

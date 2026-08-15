@@ -1280,6 +1280,28 @@ fn want_str(name: &str, v: &Value) -> Result<String, String> {
     }
 }
 
+fn want_str_list(name: &str, v: &Value) -> Result<Vec<String>, String> {
+    match v {
+        Value::List(l) => l
+            .borrow()
+            .iter()
+            .map(|x| match x {
+                Value::Str(s) => Ok(s.to_string()),
+                other => Err(format!(
+                    "{} expects a list of strings, got a list containing {}",
+                    name,
+                    type_name(other)
+                )),
+            })
+            .collect(),
+        other => Err(format!(
+            "{} expects a list of strings, got {}",
+            name,
+            type_name(other)
+        )),
+    }
+}
+
 /// Execute one of the builtins available to compiled programs (`speak`,
 /// `size`, `mcall`, ...). Stateless apart from the output buffer, the echo
 /// flag, and the clock, so both the tree-walking seed and the native
@@ -1515,6 +1537,63 @@ pub(crate) fn native_builtin(
                         name
                     )),
                 }
+            }
+            // --- CLI bridge: used by src/cli.cor (the Corros-written CLI) ---
+            "version" => Ok(Value::Str(env!("CARGO_PKG_VERSION").into())),
+            "run" => {
+                // run(path, [args]) — compile and execute a program, echoing
+                // its output live (exactly like `corros file.cor`).
+                expect_args("run", args, 2)?;
+                let path = want_str("run", &args[0])?;
+                let list = want_str_list("run", &args[1])?;
+                run_file(&path, &list, true)?;
+                Ok(Value::List(Rc::new(RefCell::new(Vec::new()))))
+            }
+            "run_bc" => {
+                // run_bc(path, [args]) — execute compiled bytecode natively.
+                expect_args("run_bc", args, 2)?;
+                let path = want_str("run_bc", &args[0])?;
+                let list = want_str_list("run_bc", &args[1])?;
+                run_vm_on(&path, &list, true)?;
+                Ok(Value::List(Rc::new(RefCell::new(Vec::new()))))
+            }
+            "run_ref" => {
+                // run_ref(path, [args]) — run through the Corros-written VM.
+                expect_args("run_ref", args, 2)?;
+                let path = want_str("run_ref", &args[0])?;
+                let list = want_str_list("run_ref", &args[1])?;
+                run_file_reference(&path, &list, true)?;
+                Ok(Value::List(Rc::new(RefCell::new(Vec::new()))))
+            }
+            "dump" => {
+                // dump(path) — the bytecode the Corros compiler emits.
+                expect_args("dump", args, 1)?;
+                let path = want_str("dump", &args[0])?;
+                let lines = dump_bytecode(&path)?;
+                Ok(Value::List(Rc::new(RefCell::new(
+                    lines.into_iter().map(|l| Value::Str(l.into())).collect(),
+                ))))
+            }
+            "run_src_try" => {
+                // run_src_try(source) — run a source string, never failing:
+                // [true, line...] on success, [false, error] on failure. The
+                // REPL needs this to keep going after an error.
+                expect_args("run_src_try", args, 1)?;
+                let src = want_str("run_src_try", &args[0])?;
+                let mut items: Vec<Value> = Vec::new();
+                match run_source(&src, &[]) {
+                    Ok(lines) => {
+                        items.push(Value::Bool(true));
+                        for l in lines {
+                            items.push(Value::Str(l.into()));
+                        }
+                    }
+                    Err(e) => {
+                        items.push(Value::Bool(false));
+                        items.push(Value::Str(e.into()));
+                    }
+                }
+                Ok(Value::List(Rc::new(RefCell::new(items))))
             }
             other => Err(format!("unknown builtin '{}'", other)),
     }
@@ -2063,4 +2142,16 @@ pub fn run_vm_on_reference(bc_path: &str, args: &[String], echo: bool) -> Result
     let text = std::fs::read_to_string(bc_path)
         .map_err(|e| format!("corros: could not open '{}': {}", bc_path, e))?;
     run_bytecode_on_reference(&text, args, echo)
+}
+
+/// Boot the Corros-written CLI (`src/cli.cor`): compile it with the cached
+/// compiled compiler and run it on the native executor, echoing its output
+/// live. Every decision the old Rust `main` made — flags, `--dump`,
+/// `--run-bc`, `--reference`, the REPL — is now made in Corros.
+pub fn run_cli(args: &[String]) -> Result<(), String> {
+    let cli_path = find_src("cli.cor")
+        .ok_or_else(|| "corros: cannot find src/cli.cor (the Corros-written CLI)".to_string())?;
+    let bytecode = compile_user_program(&cli_path.display().to_string(), &[])?;
+    crate::native::run_bytecode(&bytecode, args, true)?;
+    Ok(())
 }

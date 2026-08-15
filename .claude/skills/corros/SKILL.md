@@ -188,16 +188,21 @@ Rust side (`src/*.rs`):
 - `seed.rs` — the bootstrap seed: a tree-walking interpreter that runs
   `compiler.cor`. Values, builtins, operators, and the native method table
   live here (`Value`, `binary_op`, `index_get`, `native_builtin`,
-  `lookup_method`).
+  `lookup_method`). The CLI bridge builtins live here too: `run(path, args)`,
+  `run_bc`, `run_ref`, `dump`, `run_src_try(src)` (never fails — returns
+  `[true, line...]` or `[false, error]`), and `version()`.
 - `native.rs` — the native executor: parses the textual bytecode
   `compiler.cor` emits (`FUNCTION`/`ENDFN` blocks, one instruction per line)
   and runs it at native speed — `fib(30)` in ~1s. This is the default
   execution path; the compiled compiler itself is cached (in the OS temp
   dir, keyed on `compiler.cor` + `prelude.cor`) so startup skips the seed.
 - `lexer.rs` — the seed's tokenizer (reads the Corros sources).
-- `main.rs` — CLI: `corros file.cor` (compile → native executor),
-  `--dump` (print bytecode), `--run-bc` (run bytecode natively),
-  `--reference` (run through `vm.cor`), REPL.
+- `cli.cor` — **the CLI, written in Corros**: flags, `--dump`, `--run-bc`,
+  `--reference`, and the REPL (which uses `run_src_try` so an error in one
+  line doesn't kill the session). Keep it method-free-ish (it uses
+  `line.shave()`, which the spliced prelude provides).
+- `main.rs` — a thin launcher: compiles `cli.cor` with the cached compiled
+  compiler and runs it on the native executor with the user's arguments.
 - `tests/language.rs` — integration tests: `run("...")` executes source and
   returns captured output lines.
 

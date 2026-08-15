@@ -1,0 +1,62 @@
+// cli.cor — the Corros command-line interface, written in Corros.
+//
+// main.rs is a thin launcher: it compiles this file and runs it with the
+// user's arguments. Every decision — flags, --dump, --run-bc, --reference,
+// the REPL — is made here, in Corros, through the CLI bridge builtins
+// (run, run_bc, run_ref, dump, run_src_try, version).
+
+craft usage() {
+  speak("Corros - a scripting language whose interpreter is written in Corros")
+  speak("")
+  speak("Usage:")
+  speak("  corros [options] [file.cor] [args...]")
+  speak("  corros          start the REPL")
+  speak("  corros --dump f compile f and print its bytecode")
+  speak("  corros --run-bc f.bc [args...]  run compiled bytecode (native executor)")
+  speak("  corros --reference f  run f through the Corros-written VM (src/vm.cor)")
+  speak("  corros -v       print the version")
+}
+
+craft rest_of(i) {
+  forge out = []
+  whilst i < size(args) { shove(out, args[i]); i = i + 1 }
+  return out
+}
+
+craft repl() {
+  speak("corros " + version() + " - the language written in Corros. Type 'halt' to exit.")
+  whilst true {
+    forge line = hear("corros> ")
+    line = line.shave()
+    when line == "halt" || line == "exit" { break }
+    when line == "" { onward }
+    forge r = run_src_try(line)
+    when r[0] {
+      forge i = 1
+      whilst i < size(r) { speak(r[i]); i = i + 1 }
+    } else {
+      speak("error: " + str(r[1]))
+    }
+  }
+}
+
+when size(args) == 0 { repl() }
+else when args[0] == "-h" || args[0] == "--help" { usage() }
+else when args[0] == "-v" || args[0] == "--version" { speak("corros " + version()) }
+else when args[0] == "--dump" {
+  when size(args) < 2 { usage() }
+  else {
+    forge lines = dump(args[1])
+    forge i = 0
+    whilst i < size(lines) { speak(lines[i]); i = i + 1 }
+  }
+}
+else when args[0] == "--run-bc" {
+  when size(args) < 2 { usage() }
+  else { run_bc(args[1], rest_of(2)) }
+}
+else when args[0] == "--reference" {
+  when size(args) < 2 { usage() }
+  else { run_ref(args[1], rest_of(2)) }
+}
+else { run(args[0], rest_of(1)) }
