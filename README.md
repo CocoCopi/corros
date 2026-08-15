@@ -70,6 +70,9 @@ keep going **onward**.
   name every `craft`.
 - **REPL**, bytecode disassembly (`--dump`), and `adopt` modules with cycle
   detection.
+- **Ahead-of-time compilation** — `corros --compile file.cor` runs a
+  whole-program type analysis over the bytecode, emits C, and builds a native
+  binary with `cc -O3`. Numeric code then runs **faster than Go** (see below).
 - **Clean, dependency-free Rust** — one crate, zero external dependencies.
 
 ## Install — one line
@@ -98,7 +101,15 @@ cargo build --release
 ./target/release/corros --dump file.cor  # print compiled bytecode
 ./target/release/corros --run-bc file.bc # run compiled bytecode (native executor)
 ./target/release/corros --reference file.cor # run through the Corros-written VM (src/vm.cor)
+./target/release/corros --compile file.cor   # AOT-compile to a native binary
 ```
+
+`--compile` needs a C compiler (`cc`) and works best on statically-typed
+numeric programs: plain functions, numbers, booleans, strings, ranges,
+`when`/`whilst`/`each`, and the builtins. Dynamic features (lists, maps,
+methods, closures with upvalues) are rejected with a clear message — run those
+with the interpreter instead. The output binary is placed next to the source
+(`fib.cor` → `fib`) or at the path you give as the second argument.
 
 ## A taste of Corros
 
@@ -190,7 +201,8 @@ internals). What's left of Rust is the bootstrap seed and the native executor
 | `src/compiler.cor` | **the Corros compiler** — lexer + single-pass bytecode compiler, written in Corros |
 | `src/vm.cor`       | **the Corros VM** — the reference interpreter, written in Corros (`--reference`) |
 | `src/prelude.cor`  | **the Corros standard library** — list/string methods, `$method` dispatch |
-| `src/cli.cor`      | **the Corros CLI** — flags, `--dump`, `--run-bc`, `--reference`, the REPL |
+| `src/cli.cor`      | **the Corros CLI** — flags, `--dump`, `--run-bc`, `--reference`, `--compile`, the REPL |
+| `src/codegen.rs`   | **the AOT compiler backend** — whole-program type analysis + C emission for `--compile` |
 | `src/seed.rs`      | the bootstrap seed: a tree-walking interpreter that boots `compiler.cor` |
 | `src/native.rs`    | the native executor: runs the compiler's bytecode at native speed |
 | `src/lexer.rs`     | the seed's tokenizer (reads the Corros sources) |
@@ -247,7 +259,12 @@ library, and the CLI — is Corros.
       compiled bytecode at interpreter speed: `fib(30)` in ~1s and a
       2.7M-iteration loop in ~1s (up from 21 minutes and 53 minutes), with the
       compiled compiler cached so startup skips re-compilation
-- [ ] Performance beyond: register-based VM, JIT, or ahead-of-time compilation
+- [x] **Ahead-of-time compilation** — `corros --compile` types the bytecode
+      (numbers, strings, booleans, ranges, functions), emits C, and builds a
+      native binary with `cc -O3`. Measured on an ARM64 box, `fib(30)` runs in
+      0.030s and a 2.7M-iteration loop in 0.021s — **faster than Go** (0.057s /
+      0.051s) and within a whisker of hand-written Rust (0.029s / 0.015s).
+- [ ] Beyond: a register-based VM or a true JIT for the dynamic features
 
 ## Contributing
 

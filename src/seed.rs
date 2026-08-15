@@ -1595,6 +1595,43 @@ pub(crate) fn native_builtin(
                 }
                 Ok(Value::List(Rc::new(RefCell::new(items))))
             }
+            "native_compile" => {
+                // native_compile(path, [out]) — AOT-compile a program to a
+                // native binary: the Corros compiler produces bytecode, the
+                // static analyzer (src/codegen.rs) types it, C is emitted and
+                // built with cc -O3. Returns the output path.
+                expect_args("native_compile", args, 2)?;
+                let path = want_str("native_compile", &args[0])?;
+                let list = want_str_list("native_compile", &args[1])?;
+                let out = if let Some(o) = list.first() {
+                    o.clone()
+                } else {
+                    path.trim_end_matches(".cor").to_string()
+                };
+                // Compile WITHOUT the prelude: the prelude uses methods,
+                // closures, and maps that the static analyzer cannot type.
+                // Programs that only use plain functions, numbers, ranges,
+                // and builtins are what --compile targets.
+                let bytecode = compile_user_program_no_prelude(&path)?;
+                let c_src = crate::codegen::compile_program(&bytecode)?;
+                let c_path = write_temp("corros-c", &c_src)?;
+                let status = std::process::Command::new("cc")
+                    .args(["-O3", "-x", "c", "-o", &out, c_path.to_str().unwrap(), "-lm"])
+                    .status()
+                    .map_err(|e| format!("native_compile: could not run cc: {}", e))?;
+                if std::env::var("CORROS_KEEP_C").is_ok() {
+                    eprintln!("[C source: {}]", c_path.display());
+                } else {
+                    let _ = std::fs::remove_file(&c_path);
+                }
+                if !status.success() {
+                    return Err(format!(
+                        "native_compile: cc failed (exit {})",
+                        status
+                    ));
+                }
+                Ok(Value::Str(out.into()))
+            }
             other => Err(format!("unknown builtin '{}'", other)),
     }
 }
@@ -2058,6 +2095,16 @@ fn compile_user_program(path: &str, args: &[String]) -> Result<String, String> {
         compile_args.push(p.display().to_string());
     }
     compile_args.extend(args.iter().cloned());
+    let lines = crate::native::run_bytecode(&compiler_bc, &compile_args, false)?;
+    Ok(lines.join("\n") + "\n")
+}
+
+/// Compile a program with the cached compiled compiler but WITHOUT splicing
+/// the prelude — used by `--compile`, whose static analyzer rejects the
+/// prelude's methods/closures/maps.
+fn compile_user_program_no_prelude(path: &str) -> Result<String, String> {
+    let compiler_bc = get_compiler_bytecode()?;
+    let compile_args = vec![path.to_string()];
     let lines = crate::native::run_bytecode(&compiler_bc, &compile_args, false)?;
     Ok(lines.join("\n") + "\n")
 }

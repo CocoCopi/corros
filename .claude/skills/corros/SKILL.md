@@ -31,6 +31,8 @@ corros hello.cor one two            # pass args (visible as the `args` list)
 corros                             # interactive REPL (echoes non-nil results)
 corros --dump hello.cor            # print compiled bytecode
 corros --run-bc file.bc            # run compiled bytecode natively (self-hosting)
+corros --compile fib.cor           # AOT-compile to a native binary (needs `cc`)
+corros --reference hello.cor       # run through the Corros-written VM
 corros -v                          # version
 ```
 
@@ -196,6 +198,12 @@ Rust side (`src/*.rs`):
   and runs it at native speed — `fib(30)` in ~1s. This is the default
   execution path; the compiled compiler itself is cached (in the OS temp
   dir, keyed on `compiler.cor` + `prelude.cor`) so startup skips the seed.
+- `codegen.rs` — **the AOT compiler backend** (`--compile`): a whole-program
+  type analysis over the bytecode (numbers, strings, booleans, ranges,
+  functions, builtins) plus a stack-accurate C emitter, built with `cc -O3`.
+  It rejects dynamic programs (lists, maps, methods, closures with upvalues)
+  with clear messages. `fib(30)` compiles to a binary that runs in 0.030s —
+  faster than Go, within a whisker of Rust.
 - `lexer.rs` — the seed's tokenizer (reads the Corros sources).
 - `cli.cor` — **the CLI, written in Corros**: flags, `--dump`, `--run-bc`,
   `--reference`, and the REPL (which uses `run_src_try` so an error in one
@@ -210,6 +218,12 @@ Rust side (`src/*.rs`):
 itself and `vm.cor`; the compiled VM then runs the compiled compiler, and the
 output is byte-identical to the source compiler's — Corros compiles Corros,
 and Corros runs Corros.
+
+**AOT compilation** (`corros --compile`): the pipeline is `compiler.cor`
+(bytecode) → `codegen.rs` (types + C) → `cc -O3` (native binary). It compiles
+*without* the prelude so the static analysis stays tractable; programs that
+need methods/lists/maps run interpreted instead. The default output name is
+the source minus `.cor` (`fib.cor` → `./fib`), or pass an explicit path.
 
 ## Gotchas (important — these bite)
 

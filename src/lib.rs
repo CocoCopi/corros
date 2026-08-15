@@ -7,6 +7,7 @@
 //! interpreter, in the same way rustc's first compiler was written in OCaml.
 //! [`lexer`] provides the tokenizer the seed needs to read the Corros sources.
 
+pub mod codegen;
 pub mod error;
 pub mod lexer;
 pub mod native;

@@ -32,7 +32,7 @@ use crate::seed::{
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
-enum Op {
+pub(crate) enum Op {
     Const(u32),
     Nil,
     True,
@@ -75,21 +75,21 @@ enum Op {
     BuildRange(bool),
 }
 
-struct Function {
-    name: String,
-    arity: usize,
-    instrs: Vec<Op>,
+pub(crate) struct Function {
+    pub(crate) name: String,
+    pub(crate) arity: usize,
+    pub(crate) instrs: Vec<Op>,
 }
 
-struct Program {
-    fns: Vec<Function>,
+pub(crate) struct Program {
+    pub(crate) fns: Vec<Function>,
     /// Interned names for Get/Set/DefineGlobal and GetField, with a
     /// precomputed hash so global lookups never re-hash the string.
-    names: Vec<(Rc<str>, u64)>,
+    pub(crate) names: Vec<(Rc<str>, u64)>,
     /// Constants referenced by `Const`.
-    constants: Vec<Value>,
+    pub(crate) constants: Vec<Value>,
     /// Closure descriptors: (function id, captured (is_local, index) pairs).
-    closures: Vec<(u32, Vec<(bool, u32)>)>,
+    pub(crate) closures: Vec<(u32, Vec<(bool, u32)>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ fn parse_instr(line: &str, pools: &mut Pools) -> Result<Op, String> {
 /// Parse the textual bytecode that `compiler.cor` prints into a [`Program`].
 /// Mirrors `vm.cor`'s `parse_bc`: `FUNCTION <id> <name> <arity>` blocks ended
 /// by `ENDFN`, `MAIN` headers skipped.
-fn load_program(text: &str) -> Result<Program, String> {
+pub(crate) fn load_program(text: &str) -> Result<Program, String> {
     let mut prog = Program {
         fns: Vec::new(),
         names: Vec::new(),
@@ -339,6 +339,7 @@ impl NativeVm {
             "yank", "vouch", "mcall",
             // The CLI bridge (src/cli.cor).
             "version", "run", "run_bc", "run_ref", "dump", "run_src_try",
+            "native_compile",
         ];
         for name in names {
             let key: Rc<str> = name.into();
