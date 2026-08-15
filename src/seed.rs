@@ -1613,7 +1613,19 @@ pub(crate) fn native_builtin(
                 // Programs that only use plain functions, numbers, ranges,
                 // and builtins are what --compile targets.
                 let bytecode = compile_user_program_no_prelude(&path)?;
-                let c_src = crate::codegen::compile_program(&bytecode)?;
+                // The AOT backend is itself written in Corros (src/codegen.cor):
+                // run its compiled bytecode on the user's bytecode and capture
+                // the C source it prints.
+                let bc_path = write_temp("corros-src-bc", &bytecode)?;
+                let cg_bc = get_codegen_bytecode()?;
+                let debug = std::env::var("CORROS_CODEGEN_DEBUG").is_ok();
+                let mut cg_args = vec![bc_path.display().to_string()];
+                if debug {
+                    cg_args.push("--dbg".to_string());
+                }
+                let c_lines = crate::native::run_bytecode(&cg_bc, &cg_args, debug)?;
+                let _ = std::fs::remove_file(&bc_path);
+                let c_src = c_lines.join("\n") + "\n";
                 let c_path = write_temp("corros-c", &c_src)?;
                 let status = std::process::Command::new("cc")
                     .args(["-O3", "-x", "c", "-o", &out, c_path.to_str().unwrap(), "-lm"])
@@ -2107,6 +2119,39 @@ fn compile_user_program_no_prelude(path: &str) -> Result<String, String> {
     let compile_args = vec![path.to_string()];
     let lines = crate::native::run_bytecode(&compiler_bc, &compile_args, false)?;
     Ok(lines.join("\n") + "\n")
+}
+
+/// Content-addressed cache path for the compiled AOT backend
+/// (`src/codegen.cor` compiled with the prelude, by the cached compiler).
+fn codegen_cache_path() -> Result<PathBuf, String> {
+    let cg = find_src("codegen.cor")
+        .ok_or_else(|| "corros: cannot find src/codegen.cor (the Corros-written AOT backend)".to_string())?;
+    let mut hash = fnv1a(&std::fs::read(&cg).map_err(|e| e.to_string())?);
+    if let Some(p) = find_src("prelude.cor") {
+        if let Ok(psrc) = std::fs::read(&p) {
+            hash ^= fnv1a(&psrc).rotate_left(32);
+        }
+    }
+    if let Some(p) = find_src("compiler.cor") {
+        if let Ok(csrc) = std::fs::read(&p) {
+            hash ^= fnv1a(&csrc).rotate_left(16);
+        }
+    }
+    Ok(std::env::temp_dir().join(format!("corros-codegen-{:016x}.bc", hash)))
+}
+
+/// The compiled AOT backend bytecode, cached so --compile skips recompiling
+/// codegen.cor on every run.
+fn get_codegen_bytecode() -> Result<String, String> {
+    let cache = codegen_cache_path()?;
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        return Ok(text);
+    }
+    let cg = find_src("codegen.cor")
+        .ok_or_else(|| "corros: cannot find src/codegen.cor (the Corros-written AOT backend)".to_string())?;
+    let bytecode = compile_user_program(&cg.display().to_string(), &[])?;
+    let _ = std::fs::write(&cache, &bytecode);
+    Ok(bytecode)
 }
 
 /// Run a Corros program: the cached compiled compiler (`compiler.cor`

@@ -54,7 +54,7 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/corros" dist/
           fi
-          cp src/compiler.cor src/vm.cor src/cli.cor src/prelude.cor dist/
+          cp src/compiler.cor src/vm.cor src/cli.cor src/prelude.cor src/codegen.cor dist/
           # tar works in git-bash on Windows too
           (cd dist && tar czf "../${{ matrix.asset }}.tar.gz" .)
 

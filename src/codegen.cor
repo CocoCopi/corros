@@ -1,0 +1,1254 @@
+// src/codegen.cor — the AOT compiler backend, written in Corros.
+//
+// `corros --compile file.cor` compiles the program to bytecode (compiler.cor),
+// then runs THIS program on that bytecode: it types the program (whole-program
+// type analysis), emits C, and the seed pipes the C into `cc -O3`. Like the
+// compiler and the VM, the compiler-backend is itself written in Corros.
+//
+// Types are strings: "num" "str" "bool" "nil" "range" "any" "fn:<id>" "blt:<n>".
+// "any" is the unknown type (the Rust seed's None), absorbed by everything.
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+craft split_str(s, sep) {
+  forge out = []
+  forge acc = ""
+  forge i = 0
+  whilst i < size(s) {
+    when s[i] == sep {
+      shove(out, acc)
+      acc = ""
+    } else {
+      acc = acc + s[i]
+    }
+    i = i + 1
+  }
+  shove(out, acc)
+  return out
+}
+
+craft copy_list(l) {
+  forge o = []
+  forge i = 0
+  whilst i < size(l) { shove(o, l[i]); i = i + 1 }
+  return o
+}
+
+craft contains(l, x) {
+  forge i = 0
+  whilst i < size(l) {
+    when l[i] == x { return true }
+    i = i + 1
+  }
+  return false
+}
+
+craft sort_nums(l) {
+  // insertion sort, ascending
+  forge i = 1
+  whilst i < size(l) {
+    forge j = i
+    whilst j > 0 && l[j] < l[j - 1] {
+      forge t = l[j]
+      l[j] = l[j - 1]
+      l[j - 1] = t
+      j = j - 1
+    }
+    i = i + 1
+  }
+  return l
+}
+
+craft sort_strings(l) {
+  forge i = 1
+  whilst i < size(l) {
+    forge j = i
+    whilst j > 0 && l[j] < l[j - 1] {
+      forge t = l[j]
+      l[j] = l[j - 1]
+      l[j - 1] = t
+      j = j - 1
+    }
+    i = i + 1
+  }
+  return l
+}
+
+craft dedupe_nums(l) {
+  forge o = []
+  forge i = 0
+  whilst i < size(l) {
+    when i == 0 || l[i] != l[i - 1] { shove(o, l[i]) }
+    i = i + 1
+  }
+  return o
+}
+
+craft str_join(parts, sep) {
+  forge out = ""
+  forge i = 0
+  whilst i < size(parts) {
+    when i > 0 { out = out + sep }
+    out = out + parts[i]
+    i = i + 1
+  }
+  return out
+}
+
+// C identifier for a global name: "g" + alphanumerics, others -> _
+craft sanitize(name) {
+  forge out = "g"
+  forge i = 0
+  whilst i < size(name) {
+    forge c = name[i]
+    when (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") {
+      out = out + c
+    } else {
+      out = out + "_"
+    }
+    i = i + 1
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+craft ty_c(ty) {
+  when ty == "num" { return "double" }
+  else when ty == "str" { return "const char*" }
+  else when ty == "bool" || ty == "nil" { return "int" }
+  else when ty == "range" { return "crange" }
+  else when ty == "fn:" { return "void*" }
+  return "void*"
+}
+
+craft ty_name(ty) {
+  when ty == "num" { return "num" }
+  else when ty == "str" { return "string" }
+  else when ty == "bool" { return "bool" }
+  else when ty == "nil" { return "nil" }
+  else when ty == "range" { return "range" }
+  else when ty == "any" { return "unknown" }
+  when starts_with(ty, "fn:") { return "function" }
+  when starts_with(ty, "blt:") { return "builtin" }
+  return "value"
+}
+
+craft starts_with(s, pre) {
+  when size(s) < size(pre) { return false }
+  forge i = 0
+  whilst i < size(pre) {
+    when s[i] != pre[i] { return false }
+    i = i + 1
+  }
+  return true
+}
+
+// Unify two types: "any" absorbs, "nil" absorbs, equal stays, else error.
+craft unify(a, b, what) {
+  when a == "any" { return b }
+  else when b == "any" { return a }
+  else when a == "nil" { return b }
+  else when b == "nil" { return a }
+  else when a == b { return a }
+  flaw("--compile: type conflict (" + ty_name(a) + " vs " + ty_name(b) + ") in " + what)
+  return "any"
+}
+
+craft builtin_of(name) {
+  when name == "speak" { return "speak" }
+  else when name == "size" { return "size" }
+  else when name == "num" { return "num" }
+  else when name == "str" { return "str" }
+  else when name == "int" { return "int" }
+  else when name == "bool" { return "bool" }
+  else when name == "abs" { return "abs" }
+  else when name == "root" { return "root" }
+  else when name == "least" { return "least" }
+  else when name == "greatest" { return "greatest" }
+  else when name == "span" { return "span" }
+  else when name == "tick" { return "tick" }
+  else when name == "vouch" { return "vouch" }
+  return ""
+}
+
+craft unsupported_builtin(name) {
+  when name == "nature" || name == "mcall" || name == "hear" || name == "read"
+      || name == "readlines" || name == "file_exists" || name == "shove"
+      || name == "yank" {
+    return true
+  }
+  return false
+}
+
+// ---------------------------------------------------------------------------
+// Bytecode parsing
+// ---------------------------------------------------------------------------
+
+// Type of a CONST literal (raw text from the bytecode).
+craft const_type(lit) {
+  when starts_with(lit, "\"") { return "str" }
+  else when lit == "nil" { return "nil" }
+  else when lit == "true" || lit == "false" { return "bool" }
+  return "num"
+}
+
+craft parse_instr(line) {
+  forge parts = split_str(line, " ")
+  forge op = parts[0]
+  when op == "CONST" {
+    // The literal may contain spaces, so take everything after "CONST ".
+    return ["CONST", $slice(line, 6, size(line))]
+  }
+  else when op == "GET_GLOBAL" || op == "SET_GLOBAL" || op == "DEFINE_GLOBAL" || op == "GET_FIELD" {
+    return [op, parts[1]]
+  }
+  else when op == "GET_LOCAL" || op == "SET_LOCAL" || op == "GET_UPVALUE"
+          || op == "SET_UPVALUE" || op == "CALL" || op == "BUILD_LIST"
+          || op == "BUILD_MAP" || op == "JUMP" || op == "JUMP_IF_FALSE" || op == "LOOP" {
+    return [op, num(parts[1])]
+  }
+  else when op == "CLOSURE" {
+    // CLOSURE <fid> <is_local> <index> ... (variable-length operands)
+    forge e = ["CLOSURE"]
+    forge i = 1
+    whilst i < size(parts) { shove(e, num(parts[i])); i = i + 1 }
+    return e
+  }
+  else when op == "BUILD_RANGE" {
+    return ["BUILD_RANGE", parts[1]]
+  }
+  return [op]
+}
+
+craft parse_bc(lines) {
+  forge fns = []
+  forge i = 0
+  whilst i < size(lines) {
+    forge line = lines[i]
+    when line == "" { i = i + 1; onward }
+    forge parts = split_str(line, " ")
+    when parts[0] == "FUNCTION" {
+      forge name = parts[2]
+      forge arity = num(parts[3])
+      forge instrs = []
+      i = i + 1
+      whilst i < size(lines) && lines[i] != "ENDFN" {
+        shove(instrs, parse_instr(lines[i]))
+        i = i + 1
+      }
+      shove(fns, [name, arity, instrs])
+    }
+    i = i + 1
+  }
+  return fns
+}
+
+// ---------------------------------------------------------------------------
+// Whole-program type analysis (fixpoint over per-function stack states)
+// ---------------------------------------------------------------------------
+
+fns = []
+fn_states = []    // per fid: [params(list of ty), ret, stacks(map pc -> stack)]
+global_types = {} // name -> ty
+g_changed = false
+
+craft merge_stack(fid, s, stack) {
+  when s >= size(fns[fid][2]) {
+    flaw("--compile: jump to pc " + str(s) + " out of range")
+  }
+  forge stacks = fn_states[fid][2]
+  when !stacks.holds(s) {
+    stacks[s] = copy_list(stack)
+    g_changed = true
+    return
+  }
+  forge existing = stacks[s]
+  when size(existing) != size(stack) {
+    flaw("--compile: stack depth mismatch at pc " + str(s) + " (" + str(size(existing)) + " vs " + str(size(stack)) + ")")
+  }
+  forge changed = false
+  forge i = 0
+  whilst i < size(existing) {
+    forge u = unify(existing[i], stack[i], "the stack")
+    when u != existing[i] { changed = true }
+    i = i + 1
+  }
+  when changed {
+    forge merged = []
+    forge j = 0
+    whilst j < size(existing) {
+      shove(merged, unify(existing[j], stack[j], "the stack"))
+      j = j + 1
+    }
+    stacks[s] = merged
+    g_changed = true
+  }
+}
+
+// Returns [outgoing, succs]. `stack` is a fresh copy — safe to mutate.
+craft process(fid, pc, stack) {
+  forge instr = fns[fid][2][pc]
+  forge op = instr[0]
+  forge succs = []
+  when op == "CONST" {
+    shove(stack, const_type(instr[1]))
+    succs = [pc + 1]
+  }
+  else when op == "NIL" {
+    shove(stack, "nil")
+    succs = [pc + 1]
+  }
+  else when op == "TRUE" || op == "FALSE" {
+    shove(stack, "bool")
+    succs = [pc + 1]
+  }
+  else when op == "POP" {
+    yank(stack)
+    succs = [pc + 1]
+  }
+  else when op == "GET_LOCAL" {
+    forge i = instr[1]
+    when i < size(stack) { shove(stack, stack[i]) } else { shove(stack, "any") }
+    succs = [pc + 1]
+  }
+  else when op == "SET_LOCAL" {
+    forge i = instr[1]
+    forge t = stack[size(stack) - 1]
+    when i < size(stack) { stack[i] = t }
+    succs = [pc + 1]
+  }
+  else when op == "GET_UPVALUE" || op == "SET_UPVALUE" {
+    flaw("--compile: closures (upvalue capture) are not supported yet")
+  }
+  else when op == "GET_GLOBAL" {
+    forge name = instr[1]
+    forge b = builtin_of(name)
+    when b != "" {
+      shove(stack, "blt:" + b)
+    } else when unsupported_builtin(name) {
+      flaw("--compile: builtin '" + name + "' is not supported yet")
+    } else {
+      when global_types.holds(name) { shove(stack, global_types[name]) } else { shove(stack, "any") }
+    }
+    succs = [pc + 1]
+  }
+  else when op == "SET_GLOBAL" {
+    // SET_GLOBAL keeps the value on the stack (like the Rust analyzer).
+    forge t = stack[size(stack) - 1]
+    forge name = instr[1]
+    when global_types.holds(name) {
+      forge u = unify(global_types[name], t, "global '" + name + "'")
+      when u != global_types[name] {
+        global_types[name] = u
+        g_changed = true
+      }
+    } else {
+      global_types[name] = t
+      g_changed = true
+    }
+    succs = [pc + 1]
+  }
+  else when op == "DEFINE_GLOBAL" {
+    forge t = yank(stack)
+    forge name = instr[1]
+    when global_types.holds(name) {
+      forge u = unify(global_types[name], t, "global '" + name + "'")
+      when u != global_types[name] {
+        global_types[name] = u
+        g_changed = true
+      }
+    } else {
+      global_types[name] = t
+      g_changed = true
+    }
+    succs = [pc + 1]
+  }
+  else when op == "GET_INDEX" {
+    yank(stack) // key
+    forge container = yank(stack)
+    when container == "range" { shove(stack, "num") }
+    else when container == "str" { shove(stack, "str") }
+    else when container == "nil" || container == "any" { shove(stack, "any") }
+    else {
+      flaw("--compile: cannot index a value of type " + ty_name(container))
+    }
+    succs = [pc + 1]
+  }
+  else when op == "SET_INDEX" {
+    flaw("--compile: indexed assignment (lists/maps) is not supported yet")
+  }
+  else when op == "GET_FIELD" {
+    flaw("--compile: methods are not supported yet")
+  }
+  else when op == "ADD" {
+    forge b = yank(stack)
+    forge a = yank(stack)
+    when a == "num" && b == "num" { shove(stack, "num") }
+    else when a == "str" && b == "str" { shove(stack, "str") }
+    else when a == "nil" || b == "nil" || a == "any" || b == "any" { shove(stack, "any") }
+    else { flaw("--compile: cannot add " + ty_name(a) + " and " + ty_name(b)) }
+    succs = [pc + 1]
+  }
+  else when op == "SUB" || op == "MUL" || op == "DIV" || op == "MOD" || op == "POWER" {
+    forge b = yank(stack)
+    forge a = yank(stack)
+    when a == "num" && b == "num" { shove(stack, "num") }
+    else when a == "nil" || b == "nil" || a == "any" || b == "any" { shove(stack, "any") }
+    else { flaw("--compile: arithmetic needs numbers, got " + ty_name(a) + " and " + ty_name(b)) }
+    succs = [pc + 1]
+  }
+  else when op == "EQ" || op == "NEQ" {
+    forge b = yank(stack)
+    forge a = yank(stack)
+    when a != "any" && b != "any" && a != "nil" && b != "nil" && a != b {
+      flaw("--compile: cannot compare " + ty_name(a) + " and " + ty_name(b))
+    }
+    shove(stack, "bool")
+    succs = [pc + 1]
+  }
+  else when op == "LT" || op == "LE" || op == "GT" || op == "GE" {
+    forge b = yank(stack)
+    forge a = yank(stack)
+    when !((a == "num" && b == "num") || (a == "str" && b == "str")
+        || a == "nil" || b == "nil" || a == "any" || b == "any") {
+      flaw("--compile: cannot compare " + ty_name(a) + " and " + ty_name(b))
+    }
+    shove(stack, "bool")
+    succs = [pc + 1]
+  }
+  else when op == "NEG" {
+    forge a = yank(stack)
+    when a == "num" { shove(stack, "num") }
+    else when a == "nil" || a == "any" { shove(stack, "any") }
+    else { flaw("--compile: cannot negate a value of type " + ty_name(a)) }
+    succs = [pc + 1]
+  }
+  else when op == "NOT" {
+    yank(stack)
+    shove(stack, "bool")
+    succs = [pc + 1]
+  }
+  else when op == "JUMP" {
+    succs = [instr[1]]
+  }
+  else when op == "JUMP_IF_FALSE" {
+    yank(stack)
+    succs = [instr[1], pc + 1]
+  }
+  else when op == "LOOP" {
+    succs = [instr[1]]
+  }
+  else when op == "CALL" {
+    forge n = instr[1]
+    forge args = []
+    forge i = 0
+    whilst i < n { shove(args, yank(stack)); i = i + 1 }
+    forge callee = yank(stack)
+    when starts_with(callee, "fn:") {
+      forge f = num($slice(callee, 3, size(callee)))
+      when n != fns[f][1] {
+        flaw("--compile: function '" + fns[f][0] + "' expects " + str(fns[f][1]) + " argument(s) but got " + str(n))
+      }
+      forge j = 0
+      whilst j < n {
+        forge cur = fn_states[f][0][j]
+        forge u = unify(cur, args[j], "argument of '" + fns[f][0] + "'")
+        when u != cur {
+          fn_states[f][0][j] = u
+          g_changed = true
+        }
+        j = j + 1
+      }
+      when !fn_states[f][2].holds(0) {
+        // The entry stack is the parameter list: locals 0..arity.
+        fn_states[f][2][0] = copy_list(fn_states[f][0])
+        g_changed = true
+      }
+      shove(stack, fn_states[f][1])
+    }
+    else when starts_with(callee, "blt:") {
+      forge b = $slice(callee, 4, size(callee))
+      forge ok = true
+      when b == "speak" { ok = true }
+      else when b == "size" || b == "num" || b == "str" || b == "int" || b == "bool"
+              || b == "abs" || b == "root" { ok = (n == 1) }
+      else when b == "least" || b == "greatest" { ok = (n == 2) }
+      else when b == "span" { ok = (n == 1 || n == 2) }
+      else when b == "tick" { ok = (n == 0) }
+      else when b == "vouch" { ok = (n == 1 || n == 2) }
+      else { ok = false }
+      when !ok { flaw("--compile: wrong argument count for a builtin") }
+      when b == "speak" || b == "vouch" { shove(stack, "nil") }
+      else when b == "size" || b == "num" || b == "int" || b == "abs" || b == "root"
+              || b == "least" || b == "greatest" || b == "tick" { shove(stack, "num") }
+      else when b == "str" { shove(stack, "str") }
+      else when b == "bool" { shove(stack, "bool") }
+      else when b == "span" { shove(stack, "range") }
+    }
+    else when callee == "nil" || callee == "any" {
+      shove(stack, "any")
+    }
+    else {
+      flaw("--compile: cannot call a value of type " + ty_name(callee))
+    }
+    succs = [pc + 1]
+  }
+  else when op == "RETURN" {
+    forge t = yank(stack)
+    forge cur = fn_states[fid][1]
+    forge u = unify(cur, t, "the return of '" + fns[fid][0] + "'")
+    when u != cur {
+      fn_states[fid][1] = u
+      g_changed = true
+    }
+  }
+  else when op == "CLOSURE" {
+    when size(instr) > 2 {
+      flaw("--compile: closures (upvalue capture) are not supported yet")
+    }
+    shove(stack, "fn:" + str(instr[1]))
+    succs = [pc + 1]
+  }
+  else when op == "CLOSE_UPVALUE" {
+    yank(stack)
+    succs = [pc + 1]
+  }
+  else when op == "ROTATE3" {
+    flaw("--compile: compound indexed assignment is not supported yet")
+  }
+  else when op == "BUILD_LIST" || op == "BUILD_MAP" {
+    flaw("--compile: lists and maps are not supported yet")
+  }
+  else when op == "BUILD_RANGE" {
+    yank(stack)
+    yank(stack)
+    shove(stack, "range")
+    succs = [pc + 1]
+  }
+  return [stack, succs]
+}
+
+craft analyze() {
+  fn_states = []
+  forge i = 0
+  whilst i < size(fns) {
+    forge params = []
+    forge j = 0
+    whilst j < fns[i][1] { shove(params, "any"); j = j + 1 }
+    shove(fn_states, [params, "any", {}])
+    i = i + 1
+  }
+  fn_states[0][2][0] = []
+  forge passes = 0
+  whilst true {
+    passes = passes + 1
+    when passes > 64 { flaw("--compile: type analysis did not converge") }
+    g_changed = false
+    forge fid = 0
+    whilst fid < size(fns) {
+      when fn_states[fid][2].holds(0) {
+        forge pc = 0
+        whilst pc < size(fns[fid][2]) {
+          when fn_states[fid][2].holds(pc) {
+            forge incoming = fn_states[fid][2][pc]
+            forge r = process(fid, pc, copy_list(incoming))
+            forge outgoing = r[0]
+            forge succs = r[1]
+            forge k = 0
+            whilst k < size(succs) {
+              merge_stack(fid, succs[k], outgoing)
+              k = k + 1
+            }
+          }
+          pc = pc + 1
+        }
+      }
+      fid = fid + 1
+    }
+    when !g_changed { return }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Slot check: each local slot must hold one consistent type
+// ---------------------------------------------------------------------------
+
+craft slot_check() {
+  forge fid = 0
+  whilst fid < size(fns) {
+    forge slots = {}
+    forge pc = 0
+    whilst pc < size(fns[fid][2]) {
+      forge op = fns[fid][2][pc][0]
+      when op == "GET_LOCAL" || op == "SET_LOCAL" {
+        forge i = fns[fid][2][pc][1]
+        when fn_states[fid][2].holds(pc) {
+          forge s = fn_states[fid][2][pc]
+          when i < size(s) {
+            forge t = s[i]
+            when t != "nil" && t != "any" {
+              when !slots.holds(i) { slots[i] = [] }
+              when !contains(slots[i], t) { shove(slots[i], t) }
+            }
+          }
+        }
+      }
+      pc = pc + 1
+    }
+    forge keys = slots.labels()
+    forge k = 0
+    whilst k < size(keys) {
+      forge tylist = slots[keys[k]]
+      when size(tylist) > 1 {
+        flaw("--compile: a local holds both " + tylist[0] + " and " + tylist[1]
+          + " (dynamic typing) in '" + fns[fid][0] + "' at stack position " + str(keys[k]))
+      }
+      k = k + 1
+    }
+    fid = fid + 1
+  }
+}
+
+// ---------------------------------------------------------------------------
+// C emission
+// ---------------------------------------------------------------------------
+
+g_out = []
+tmp = 0
+stack = []           // emission stack of [ty, cvar]
+target_states = {}   // pc -> [stack_state, multi]
+var_types = {}       // cvar -> ty
+fid = 0
+
+craft emit(line) {
+  shove(g_out, line)
+}
+
+craft fresh() {
+  tmp = tmp + 1
+  return "t" + str(tmp)
+}
+
+craft pop_op() {
+  when size(stack) == 0 { flaw("--compile: internal error (stack underflow)") }
+  return yank(stack)
+}
+
+craft push(ty, expr) {
+  when ty == "any" {
+    flaw("--compile: cannot determine the type of a value (dynamic typing)")
+  }
+  forge name = fresh()
+  emit(ty_c(ty) + " " + name + " = " + expr + ";")
+  var_types[name] = ty
+  shove(stack, [ty, name])
+}
+
+craft push_operand(ty, cvar) {
+  when ty != "any" { var_types[cvar] = ty }
+  shove(stack, [ty, cvar])
+}
+
+craft record_target(t) {
+  forge cur = copy_list(stack)
+  when !target_states.holds(t) {
+    target_states[t] = [cur, false]
+  } else {
+    forge prev = target_states[t][0]
+    forge multi = target_states[t][1]
+    when !multi {
+      forge same = size(prev) == size(cur)
+      forge i = 0
+      whilst same && i < size(prev) {
+        when prev[i][1] != cur[i][1] { same = false }
+        i = i + 1
+      }
+      when !same { target_states[t] = [prev, true] }
+    }
+  }
+}
+
+craft fn_ret(f) {
+  when f == 0 { return "nil" }
+  forge r = fn_states[f][1]
+  when r == "any" {
+    flaw("--compile: cannot determine the return type of '" + fns[f][0] + "'")
+  }
+  when starts_with(r, "fn:") || starts_with(r, "blt:") {
+    flaw("--compile: functions returning functions are not supported")
+  }
+  return r
+}
+
+craft fn_params(f) {
+  forge out = []
+  forge i = 0
+  whilst i < fns[f][1] {
+    forge t = fn_states[f][0][i]
+    when t == "any" {
+      flaw("--compile: cannot determine the type of a parameter of '" + fns[f][0] + "'")
+    }
+    shove(out, ty_c(t) + " p" + str(i))
+    i = i + 1
+  }
+  return str_join(out, ", ")
+}
+
+craft cmp(op, a, b) {
+  when a[0] == "num" && b[0] == "num" {
+    push("bool", "(" + a[1] + " " + op + " " + b[1] + ")")
+  }
+  else when a[0] == "str" && b[0] == "str" {
+    forge cop = ""
+    when op == "<" { cop = "< 0" }
+    else when op == "<=" { cop = "<= 0" }
+    else when op == ">" { cop = "> 0" }
+    else { cop = ">= 0" }
+    push("bool", "(strcmp(" + a[1] + ", " + b[1] + ") " + cop + ")")
+  }
+  else {
+    flaw("--compile: cannot compare these values")
+  }
+}
+
+craft gen_builtin(b, args) {
+  when b == "speak" {
+    forge pieces = []
+    forge i = 0
+    whilst i < size(args) {
+      forge a = args[i]
+      when a[0] == "num" {
+        forge n = fresh()
+        emit("char " + n + "[64];")
+        emit("c_fmt_num(" + a[1] + ", " + n + ");")
+        shove(pieces, n)
+      }
+      else when a[0] == "str" { shove(pieces, a[1]) }
+      else when a[0] == "bool" { shove(pieces, "(" + a[1] + " ? \"true\" : \"false\")") }
+      else when a[0] == "nil" { shove(pieces, "\"nil\"") }
+      else { flaw("--compile: cannot speak this value") }
+      i = i + 1
+    }
+    when size(pieces) == 0 {
+      emit("printf(\"\\n\");")
+    } else {
+      forge fmt = ""
+      forge j = 0
+      whilst j < size(pieces) {
+        when j > 0 { fmt = fmt + " " }
+        fmt = fmt + "%s"
+        j = j + 1
+      }
+      emit("printf(\"" + fmt + "\\n\", " + str_join(pieces, ", ") + ");")
+    }
+    push("nil", "0")
+  }
+  else when b == "size" {
+    forge a = args[0]
+    when a[0] == "range" { push("num", "c_size_range(" + a[1] + ")") }
+    else when a[0] == "str" { push("num", "c_size_str(" + a[1] + ")") }
+    else { flaw("--compile: size needs a range or string") }
+  }
+  else when b == "num" {
+    forge a = args[0]
+    when a[0] == "num" { push("num", a[1]) }
+    else when a[0] == "str" { push("num", "atof(" + a[1] + ")") }
+    else when a[0] == "bool" { push("num", "(" + a[1] + " ? 1.0 : 0.0)") }
+    else { flaw("--compile: cannot num this value") }
+  }
+  else when b == "str" {
+    forge a = args[0]
+    when a[0] == "num" {
+      forge n = fresh()
+      emit("char " + n + "[64];")
+      emit("c_fmt_num(" + a[1] + ", " + n + ");")
+      push_operand("str", n)
+    }
+    else when a[0] == "str" { push("str", a[1]) }
+    else when a[0] == "bool" { push("str", "(" + a[1] + " ? \"true\" : \"false\")") }
+    else when a[0] == "nil" { push("str", "\"nil\"") }
+    else { flaw("--compile: cannot str this value") }
+  }
+  else when b == "int" {
+    forge a = args[0]
+    push("num", "trunc(" + a[1] + ")")
+  }
+  else when b == "bool" {
+    forge a = args[0]
+    when a[0] == "num" || a[0] == "bool" { push("bool", "(" + a[1] + " != 0)") }
+    else when a[0] == "str" { push("bool", "(" + a[1] + "[0] != 0)") }
+    else when a[0] == "nil" { push("bool", "0") }
+    else { flaw("--compile: cannot bool this value") }
+  }
+  else when b == "abs" {
+    forge a = args[0]
+    push("num", "fabs(" + a[1] + ")")
+  }
+  else when b == "root" {
+    forge a = args[0]
+    push("num", "sqrt(" + a[1] + ")")
+  }
+  else when b == "least" {
+    forge a = args[0]
+    forge c = args[1]
+    push("num", "((" + a[1] + ") < (" + c[1] + ") ? (" + a[1] + ") : (" + c[1] + "))")
+  }
+  else when b == "greatest" {
+    forge a = args[0]
+    forge c = args[1]
+    push("num", "((" + a[1] + ") > (" + c[1] + ") ? (" + a[1] + ") : (" + c[1] + "))")
+  }
+  else when b == "span" {
+    forge c = args[size(args) - 1]
+    forge n = fresh()
+    when size(args) == 2 {
+      forge a = args[0]
+      emit("crange " + n + " = { " + a[1] + ", " + c[1] + " };")
+    } else {
+      emit("crange " + n + " = { 0.0, " + c[1] + " };")
+    }
+    push_operand("range", n)
+  }
+  else when b == "tick" {
+    push("num", "c_tick()")
+  }
+  else when b == "vouch" {
+    forge cond = args[0]
+    forge msg = "\"vouch failed: the condition was false\""
+    when size(args) == 2 { msg = args[1][1] }
+    emit("if (!(" + cond[1] + ")) { fprintf(stderr, \"vouch failed: %s\\n\", " + msg + "); exit(70); }")
+    push("nil", "0")
+  }
+}
+
+craft gen_instr(instr) {
+  forge op = instr[0]
+  when op == "CONST" {
+    forge lit = instr[1]
+    forge ty = const_type(lit)
+    when ty == "num" { push("num", lit) }
+    else when ty == "str" { push("str", lit) }
+    else when ty == "bool" {
+      when lit == "true" { push("bool", "1") } else { push("bool", "0") }
+    }
+    else { push("nil", "0") }
+  }
+  else when op == "NIL" { push("nil", "0") }
+  else when op == "TRUE" { push("bool", "1") }
+  else when op == "FALSE" { push("bool", "0") }
+  else when op == "POP" { pop_op() }
+  else when op == "GET_LOCAL" {
+    forge o = stack[instr[1]]
+    push(o[0], o[1])
+  }
+  else when op == "SET_LOCAL" {
+    forge i = instr[1]
+    forge top = stack[size(stack) - 1]
+    forge slot = stack[i]
+    forge slot_var = slot[1]
+    forge top_ty = top[0]
+    forge needs_swap = false
+    when var_types.holds(slot_var) {
+      needs_swap = var_types[slot_var] != top_ty && top_ty != "nil"
+    } else {
+      needs_swap = top_ty != "nil"
+    }
+    when needs_swap {
+      forge t = top_ty
+      when t == "any" { flaw("--compile: cannot determine the type of a value (dynamic typing)") }
+      forge name = fresh()
+      emit(ty_c(t) + " " + name + " = " + top[1] + ";")
+      var_types[name] = t
+      stack[i] = [t, name]
+    } else {
+      emit(slot_var + " = " + top[1] + ";")
+      stack[i][0] = top_ty
+    }
+  }
+  else when op == "GET_UPVALUE" || op == "SET_UPVALUE" {
+    flaw("--compile: closures are not supported yet")
+  }
+  else when op == "GET_GLOBAL" {
+    forge name = instr[1]
+    forge b = builtin_of(name)
+    when b != "" {
+      push_operand("blt:" + b, "0")
+    } else {
+      forge t = "any"
+      when global_types.holds(name) { t = global_types[name] }
+      when starts_with(t, "fn:") {
+        push_operand(t, "fn_" + $slice(t, 3, size(t)))
+      } else when t != "any" {
+        push(t, sanitize(name))
+      } else {
+        flaw("--compile: cannot determine the type of global '" + name + "'")
+      }
+    }
+  }
+  else when op == "SET_GLOBAL" {
+    forge top = stack[size(stack) - 1]
+    forge name = instr[1]
+    forge t = "any"
+    when global_types.holds(name) { t = global_types[name] }
+    when !starts_with(t, "fn:") {
+      emit(sanitize(name) + " = " + top[1] + ";")
+    }
+  }
+  else when op == "DEFINE_GLOBAL" {
+    forge top = pop_op()
+    forge name = instr[1]
+    forge t = "any"
+    when global_types.holds(name) { t = global_types[name] }
+    when !starts_with(t, "fn:") {
+      emit(sanitize(name) + " = " + top[1] + ";")
+    }
+  }
+  else when op == "GET_INDEX" {
+    forge key = pop_op()
+    forge container = pop_op()
+    when container[0] == "range" {
+      push("num", "(" + container[1] + ".s + " + key[1] + ")")
+    }
+    else when container[0] == "str" {
+      forge n = fresh()
+      emit("char " + n + "[2];")
+      emit(n + "[0] = (" + container[1] + ")[(int)(" + key[1] + ")];")
+      emit(n + "[1] = 0;")
+      push_operand("str", n)
+    }
+    else {
+      flaw("--compile: cannot index a value of type " + ty_name(container[0]))
+    }
+  }
+  else when op == "SET_INDEX" {
+    flaw("--compile: indexed assignment is not supported yet")
+  }
+  else when op == "GET_FIELD" {
+    flaw("--compile: methods are not supported yet")
+  }
+  else when op == "ADD" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "num" && b[0] == "num" { push("num", "(" + a[1] + " + " + b[1] + ")") }
+    else when a[0] == "str" && b[0] == "str" {
+      forge n = fresh()
+      emit("char* " + n + " = c_concat(" + a[1] + ", " + b[1] + ");")
+      push_operand("str", n)
+    }
+    else { flaw("--compile: cannot add these values") }
+  }
+  else when op == "SUB" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "num" && b[0] == "num" { push("num", "(" + a[1] + " - " + b[1] + ")") }
+    else { flaw("--compile: arithmetic needs numbers") }
+  }
+  else when op == "MUL" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "num" && b[0] == "num" { push("num", "(" + a[1] + " * " + b[1] + ")") }
+    else { flaw("--compile: arithmetic needs numbers") }
+  }
+  else when op == "DIV" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "num" && b[0] == "num" { push("num", "(" + a[1] + " / " + b[1] + ")") }
+    else { flaw("--compile: arithmetic needs numbers") }
+  }
+  else when op == "MOD" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "num" && b[0] == "num" { push("num", "fmod(" + a[1] + ", " + b[1] + ")") }
+    else { flaw("--compile: arithmetic needs numbers") }
+  }
+  else when op == "POWER" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "num" && b[0] == "num" { push("num", "pow(" + a[1] + ", " + b[1] + ")") }
+    else { flaw("--compile: arithmetic needs numbers") }
+  }
+  else when op == "EQ" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "str" && b[0] == "str" { push("bool", "(strcmp(" + a[1] + ", " + b[1] + ") == 0)") }
+    else { push("bool", "(" + a[1] + " == " + b[1] + ")") }
+  }
+  else when op == "NEQ" {
+    forge b = pop_op()
+    forge a = pop_op()
+    when a[0] == "str" && b[0] == "str" { push("bool", "(strcmp(" + a[1] + ", " + b[1] + ") != 0)") }
+    else { push("bool", "(" + a[1] + " != " + b[1] + ")") }
+  }
+  else when op == "LT" {
+    forge b = pop_op()
+    forge a = pop_op()
+    cmp("<", a, b)
+  }
+  else when op == "LE" {
+    forge b = pop_op()
+    forge a = pop_op()
+    cmp("<=", a, b)
+  }
+  else when op == "GT" {
+    forge b = pop_op()
+    forge a = pop_op()
+    cmp(">", a, b)
+  }
+  else when op == "GE" {
+    forge b = pop_op()
+    forge a = pop_op()
+    cmp(">=", a, b)
+  }
+  else when op == "NEG" {
+    forge a = pop_op()
+    push("num", "(-" + a[1] + ")")
+  }
+  else when op == "NOT" {
+    forge a = pop_op()
+    when a[0] == "str" { push("bool", "(!(" + a[1] + "[0] != 0))") }
+    else when a[0] == "num" || a[0] == "bool" || a[0] == "nil" { push("bool", "(!(" + a[1] + "))") }
+    else { flaw("--compile: cannot negate this value") }
+  }
+  else when op == "JUMP" {
+    emit("goto L" + str(instr[1]) + ";")
+    record_target(instr[1])
+  }
+  else when op == "JUMP_IF_FALSE" {
+    forge cond = pop_op()
+    emit("if (!(" + cond[1] + ")) goto L" + str(instr[1]) + ";")
+    record_target(instr[1])
+  }
+  else when op == "LOOP" {
+    emit("goto L" + str(instr[1]) + ";")
+    record_target(instr[1])
+  }
+  else when op == "CALL" {
+    forge n = instr[1]
+    forge args = []
+    forge i = 0
+    whilst i < n { shove(args, pop_op()); i = i + 1 }
+    // Popped top-first, so reverse back to source order.
+    forge rev = []
+    forge j = size(args) - 1
+    whilst j >= 0 { shove(rev, args[j]); j = j - 1 }
+    forge callee = pop_op()
+    when starts_with(callee[0], "fn:") {
+      forge f = num($slice(callee[0], 3, size(callee[0])))
+      forge ret = fn_ret(f)
+      forge name = fresh()
+      forge arg_exprs = []
+      forge k = 0
+      whilst k < size(rev) { shove(arg_exprs, rev[k][1]); k = k + 1 }
+      emit(ty_c(ret) + " " + name + " = fn_" + str(f) + "(" + str_join(arg_exprs, ", ") + ");")
+      push_operand(ret, name)
+    }
+    else when starts_with(callee[0], "blt:") {
+      forge b = $slice(callee[0], 4, size(callee[0]))
+      gen_builtin(b, rev)
+    }
+    else {
+      flaw("--compile: cannot call this value")
+    }
+  }
+  else when op == "RETURN" {
+    forge v = pop_op()
+    when fid == 0 {
+      emit("return 0;")
+    } else {
+      emit("return " + v[1] + ";")
+    }
+  }
+  else when op == "CLOSURE" {
+    when size(instr) > 2 {
+      flaw("--compile: closures are not supported yet")
+    }
+    // Static functions: no runtime closure value is needed.
+    push_operand("fn:" + str(instr[1]), "fn_" + str(instr[1]))
+  }
+  else when op == "CLOSE_UPVALUE" {
+    pop_op()
+  }
+  else when op == "ROTATE3" {
+    flaw("--compile: compound indexed assignment is not supported yet")
+  }
+  else when op == "BUILD_LIST" || op == "BUILD_MAP" {
+    flaw("--compile: lists and maps are not supported yet")
+  }
+  else when op == "BUILD_RANGE" {
+    forge end = pop_op()
+    forge start = pop_op()
+    forge n = fresh()
+    forge e = end[1]
+    when instr[1] == "inclusive" { e = "(" + end[1] + " + 1.0)" }
+    emit("crange " + n + " = { " + start[1] + ", " + e + " };")
+    push_operand("range", n)
+  }
+}
+
+craft gen_function(f) {
+  forge ret = fn_ret(f)
+  when f == 0 {
+    emit("int main(void) {")
+  } else {
+    emit("static " + ty_c(ret) + " fn_" + str(f) + "(" + fn_params(f) + ") {")
+  }
+  stack = []
+  target_states = {}
+  forge i = 0
+  whilst i < fns[f][1] {
+    forge t = fn_states[f][0][i]
+    forge cvar = "p" + str(i)
+    var_types[cvar] = t
+    shove(stack, [t, cvar])
+    i = i + 1
+  }
+  forge instrs = fns[f][2]
+  forge targets = []
+  forge pc = 0
+  whilst pc < size(instrs) {
+    forge op = instrs[pc][0]
+    when op == "JUMP" || op == "JUMP_IF_FALSE" || op == "LOOP" {
+      shove(targets, instrs[pc][1])
+    }
+    pc = pc + 1
+  }
+  targets = dedupe_nums(sort_nums(targets))
+  forge unreachable = false
+  forge ti = 0
+  forge p2 = 0
+  whilst p2 < size(instrs) {
+    when ti < size(targets) && targets[ti] == p2 {
+      emit("L" + str(p2) + ": ;")
+      when target_states.holds(p2) {
+        forge st2 = target_states[p2][0]
+        forge multi = target_states[p2][1]
+        when multi {
+          flaw("--compile: control-flow joins with live values are not supported yet")
+        }
+        when !unreachable {
+          when size(stack) != size(st2) {
+            flaw("--compile: control-flow joins with live values are not supported yet")
+          }
+          forge c = 0
+          whilst c < size(stack) {
+            when stack[c][1] != st2[c][1] {
+              flaw("--compile: control-flow joins with live values are not supported yet")
+            }
+            c = c + 1
+          }
+        }
+        stack = copy_list(st2)
+      }
+      unreachable = false
+      ti = ti + 1
+    }
+    forge op = instrs[p2][0]
+    forge terminal = op == "RETURN" || op == "JUMP" || op == "LOOP"
+    gen_instr(instrs[p2])
+    when terminal { unreachable = true }
+    p2 = p2 + 1
+  }
+  when f == 0 {
+    emit("return 0;")
+  } else when ret == "str" {
+    emit("return \"\";")
+  } else when ret == "num" {
+    emit("return 0.0;")
+  } else {
+    emit("return 0;")
+  }
+  emit("}")
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+// The C preamble: includes and runtime helpers mirroring the interpreter.
+craft emit_header() {
+  emit("/* Generated by corros --compile. */")
+  emit("#include <stdio.h>")
+  emit("#include <stdlib.h>")
+  emit("#include <string.h>")
+  emit("#include <math.h>")
+  emit("#include <time.h>")
+  emit("")
+  emit("typedef struct { double s, e; } crange;")
+  emit("")
+  emit("static double c_size_range(crange r) { double n = r.e - r.s; return n > 0.0 ? n : 0.0; }")
+  emit("static size_t c_size_str(const char* s) { return strlen(s); }")
+  emit("")
+  emit("static char* c_concat(const char* a, const char* b) {")
+  emit("    size_t la = strlen(a), lb = strlen(b);")
+  emit("    char* out = malloc(la + lb + 1);")
+  emit("    memcpy(out, a, la);")
+  emit("    memcpy(out + la, b, lb + 1);")
+  emit("    return out;")
+  emit("}")
+  emit("")
+  emit("static void c_fmt_num(double x, char* buf) {")
+  emit("    if (x != x) { strcpy(buf, \"nan\"); return; }")
+  emit("    if (x == 1.0 / 0.0) { strcpy(buf, \"inf\"); return; }")
+  emit("    if (x == -1.0 / 0.0) { strcpy(buf, \"-inf\"); return; }")
+  emit("    if (fabs(x) < 1e15 && floor(x) == x) { sprintf(buf, \"%lld\", (long long)x); return; }")
+  emit("    sprintf(buf, \"%.15g\", x);")
+  emit("}")
+  emit("")
+  emit("static double c_tick(void) {")
+  emit("    struct timespec ts;")
+  emit("    clock_gettime(CLOCK_MONOTONIC, &ts);")
+  emit("    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;")
+  emit("}")
+  emit("")
+}
+
+craft emit_program() {
+  emit_header()
+  // Forward declarations (mutual recursion and clean call order).
+  forge f = 1
+  whilst f < size(fns) {
+    when fn_states[f][2].holds(0) {
+      emit("static " + ty_c(fn_ret(f)) + " fn_" + str(f) + "(" + fn_params(f) + ");")
+    }
+    f = f + 1
+  }
+  // Global variables (non-function, non-builtin) live at file scope.
+  forge names = sort_strings(global_types.labels())
+  forge i = 0
+  whilst i < size(names) {
+    forge t = global_types[names[i]]
+    when t != "any" && !starts_with(t, "fn:") && !starts_with(t, "blt:") {
+      emit("static " + ty_c(t) + " " + sanitize(names[i]) + ";")
+    }
+    i = i + 1
+  }
+  // Function bodies.
+  forge fid2 = 0
+  whilst fid2 < size(fns) {
+    when fn_states[fid2][2].holds(0) {
+      fid = fid2
+      gen_function(fid2)
+    }
+    fid2 = fid2 + 1
+  }
+}
+
+craft run() {
+  fns = parse_bc(readlines(args[0]))
+  when size(args) > 1 && args[1] == "--dbg" { speak("parsed " + str(size(fns)) + " fns") }
+  analyze()
+  when size(args) > 1 && args[1] == "--dbg" { speak("analyzed") }
+  slot_check()
+  when size(args) > 1 && args[1] == "--dbg" { speak("slots ok") }
+  emit_program()
+  when size(args) > 1 && args[1] == "--dbg" { speak("emitted") }
+  forge i = 0
+  whilst i < size(g_out) { speak(g_out[i]); i = i + 1 }
+}
+
+run()

@@ -202,12 +202,14 @@ Rust side (`src/*.rs`):
   and runs it at native speed — `fib(30)` in ~1s. This is the default
   execution path; the compiled compiler itself is cached (in the OS temp
   dir, keyed on `compiler.cor` + `prelude.cor`) so startup skips the seed.
-- `codegen.rs` — **the AOT compiler backend** (`--compile`): a whole-program
-  type analysis over the bytecode (numbers, strings, booleans, ranges,
-  functions, builtins) plus a stack-accurate C emitter, built with `cc -O3`.
-  It rejects dynamic programs (lists, maps, methods, closures with upvalues)
-  with clear messages. `fib(30)` compiles to a binary that runs in 0.030s —
-  faster than Go, within a whisker of Rust.
+- `codegen.cor` — **the AOT compiler backend, written in Corros**: a
+  whole-program type analysis over the bytecode (numbers, strings, booleans,
+  ranges, functions, builtins) plus a stack-accurate C emitter, built with
+  `cc -O3`. Like the compiler and the VM, the compiler-backend is Corros —
+  the seed only runs its cached compiled bytecode. It rejects dynamic
+  programs (lists, maps, methods, closures with upvalues) with clear
+  messages. `fib(30)` compiles to a binary that runs in ~0.025s — faster
+  than Go and Rust-f64, at hand-written-C parity.
 - `lexer.rs` — the seed's tokenizer (reads the Corros sources).
 - `cli.cor` — **the CLI, written in Corros**: flags, `--dump`, `--run-bc`,
   `--reference`, and the REPL (which uses `run_src_try` so an error in one
@@ -224,7 +226,7 @@ output is byte-identical to the source compiler's — Corros compiles Corros,
 and Corros runs Corros.
 
 **AOT compilation** (`corros --compile`): the pipeline is `compiler.cor`
-(bytecode) → `codegen.rs` (types + C) → `cc -O3` (native binary). It compiles
+(bytecode) → `codegen.cor` (types + C) → `cc -O3` (native binary). It compiles
 *without* the prelude so the static analysis stays tractable; programs that
 need methods/lists/maps run interpreted instead. The default output name is
 the source minus `.cor` (`fib.cor` → `./fib`), or pass an explicit path.

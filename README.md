@@ -202,7 +202,7 @@ internals). What's left of Rust is the bootstrap seed and the native executor
 | `src/vm.cor`       | **the Corros VM** — the reference interpreter, written in Corros (`--reference`) |
 | `src/prelude.cor`  | **the Corros standard library** — list/string methods, `$method` dispatch |
 | `src/cli.cor`      | **the Corros CLI** — flags, `--dump`, `--run-bc`, `--reference`, `--compile`, the REPL |
-| `src/codegen.rs`   | **the AOT compiler backend** — whole-program type analysis + C emission for `--compile` |
+| `src/codegen.cor`  | **the AOT compiler backend, written in Corros** — whole-program type analysis + C emission for `--compile` |
 | `src/seed.rs`      | the bootstrap seed: a tree-walking interpreter that boots `compiler.cor` |
 | `src/native.rs`    | the native executor: runs the compiler's bytecode at native speed |
 | `src/lexer.rs`     | the seed's tokenizer (reads the Corros sources) |

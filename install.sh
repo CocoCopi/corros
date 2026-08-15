@@ -5,7 +5,7 @@
 # Downloads a prebuilt binary from the latest GitHub release (fast), falling
 # back to building from source when none exists for your platform. Installs
 # `corros` and the Corros-written interpreter (compiler.cor, vm.cor, cli.cor,
-# prelude.cor) side by side, which the binary looks up next to itself.
+# prelude.cor, codegen.cor) side by side, which the binary looks up next to itself.
 set -euo pipefail
 
 # --- platform detection ---------------------------------------------------
@@ -68,7 +68,7 @@ fi
 
 # --- install --------------------------------------------------------------
 install -m 0755 "$bin" "$bindir/corros"
-for cor in compiler.cor vm.cor cli.cor prelude.cor; do
+for cor in compiler.cor vm.cor cli.cor prelude.cor codegen.cor; do
   if [[ -f "$src_dir/$cor" ]]; then
     install -m 0644 "$src_dir/$cor" "$bindir/$cor"
   else
