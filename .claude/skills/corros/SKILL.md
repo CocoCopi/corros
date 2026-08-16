@@ -148,6 +148,50 @@ do `xs.shove` and pass it around; call them directly.
 | `shove(list, x)` | append (self-hosting; same as `.shove`) |
 | `yank(list)` | pop last (self-hosting; same as `.yank`) |
 
+### Host services (networking / files / processes / FFI)
+
+These builtins let Corros programs talk to the OS — they power the Corros
+Ollama server (`/sdcard/Projects/Ollama`). Implemented in the seed
+(`seed.rs`), shared by the seed and the native executor. Handles are opaque
+numbers (u64 ids); pointers travel as u64 bit patterns (canonical user
+pointers are < 2^48, so f64 round-trips them exactly).
+
+**Networking** — `net_listen(port)` → listener handle · `net_accept(listener)`
+→ connection handle (blocking) · `net_read(conn, max)` → up to max bytes, `""`
+on EOF/timeout (30s default, change with `net_timeout(conn, ms)`) ·
+`net_write(conn, s)` → bytes written · `net_close(conn)`.
+
+**HTTP client** — `http_get(url)` → `[status, body]` (follows up to 5
+redirects) · `http_download(url, path)` → status (streams raw bytes — binary
+GGUF downloads never round-trip through a string).
+
+**Files & processes** — `file_write(path, s)` · `file_append(path, s)` ·
+`sys_exec(cmd, [args])` → `[status, stdout]` · `getenv(name)` → value or `""`.
+
+**Dynamic FFI (dlopen)** — `load_lib(path)` → handle (0 on failure — some
+filesystems, like Android's sdcard fuse mount, refuse dlopen; copy the lib to
+a temp dir and retry) · `lib_call(lib, "fn", [i64 args...])` → i64 result
+(transmutes the symbol to an 8×i64-arg C function; SysV x86-64 / AAPCS64
+ABIs) · `lib_close(lib)`.
+
+**Memory & C strings** — `mem_alloc(bytes)` → ptr (8-aligned, tracked for
+safe free) · `mem_free(ptr)` · `mem_i64(ptr, idx)` → the i64 at ptr+idx*8 ·
+`cstr_alloc(s)` → leaked C string (free with `cstr_free`) · `cstr_get(ptr)` →
+string (reads to NUL) · `cstr_free(ptr)`. C-malloc'd strings from a shim must
+be freed by the shim's own free wrapper (e.g. `ll_free`), not `cstr_free`.
+
+**Conventions for FFI programs** (see `/sdcard/Projects/Ollama`):
+- Shared app state should be **globals**, not top-level `forge` locals — a
+  `craft` sees globals; top-level locals are not visible inside functions.
+- `adopt` resolves relative to the **main file's directory**, and adopting the
+  same file twice is a hard error — adopt each file once, in dependency order,
+  from the entry point.
+- Top-level `return` is illegal — dispatch from a `craft main()`.
+- `lib_call` args must be numbers; build argument lists as `[a, b, ...]`.
+- The `corros` binary resolves its own `src/cli.cor` from the CWD first — a
+  project with its own `src/cli.cor` must be launched from a neutral directory
+  with an absolute path (see the `corllama` launcher).
+
 ## Methods (receiver.method(...))
 
 **lists** — `shove(x)` append · `yank()` pop · `size()` · `slot(i, x)` insert at i

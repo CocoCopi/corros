@@ -19,10 +19,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Read as _, Write as _};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::lexer::{Token, TokenKind};
 
@@ -786,6 +789,11 @@ impl Interpreter {
             "speak", "eprint", "hear", "size", "nature", "str", "num", "int", "bool", "abs",
             "root", "least", "greatest", "tick", "span", "vouch", "flaw", "read",
             "readlines", "shove", "yank", "file_exists", "mcall",
+            // Host services (the Corros-written Ollama server).
+            "net_listen", "net_accept", "net_read", "net_write", "net_close", "net_timeout",
+            "http_get", "http_download", "file_write", "file_append", "sys_exec",
+            "load_lib", "lib_call", "mem_i64", "cstr_alloc", "cstr_get", "cstr_free",
+            "mem_alloc", "mem_free", "lib_close", "getenv",
         ];
         let mut vars = self.root.vars.borrow_mut();
         for name in names {
@@ -1302,6 +1310,129 @@ fn want_str_list(name: &str, v: &Value) -> Result<Vec<String>, String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Host services: networking, HTTP, files, processes, and dynamic libraries
+// ---------------------------------------------------------------------------
+//
+// These power the Corros-written Ollama server (`/sdcard/Projects/Ollama`):
+// Corros holds every handle as an opaque u64 number, and the seed is the only
+// place that touches the OS beyond the filesystem. Handles start at 1 and
+// increment, so they never lose precision in f64.
+
+fn next_handle() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+static LISTENERS: Mutex<Option<HashMap<u64, TcpListener>>> = Mutex::new(None);
+/// Open connections: (stream, read-timeout in ms). 0 = no timeout.
+static CONNS: Mutex<Option<HashMap<u64, (TcpStream, u64)>>> = Mutex::new(None);
+/// dlopen handles stored as `usize` (raw pointers are not Sync, usize is).
+static LIBS: Mutex<Option<HashMap<u64, usize>>> = Mutex::new(None);
+/// Scratch allocations: ptr -> byte size (so `mem_free` can dealloc safely).
+static MEMS: Mutex<Option<HashMap<u64, usize>>> = Mutex::new(None);
+
+fn listeners() -> std::sync::MutexGuard<'static, Option<HashMap<u64, TcpListener>>> {
+    LISTENERS.lock().unwrap()
+}
+fn conns() -> std::sync::MutexGuard<'static, Option<HashMap<u64, (TcpStream, u64)>>> {
+    CONNS.lock().unwrap()
+}
+fn libs() -> std::sync::MutexGuard<'static, Option<HashMap<u64, usize>>> {
+    LIBS.lock().unwrap()
+}
+
+#[cfg(unix)]
+#[link(name = "dl")]
+extern "C" {
+    fn dlopen(filename: *const std::ffi::c_char, flag: i32) -> *mut std::ffi::c_void;
+    fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn dlclose(handle: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(unix)]
+const RTLD_NOW: i32 = 2;
+
+/// The dynamic-FFI calling convention: every C function in the Corros engine
+/// shim (`engine.c`) takes up to 8 integer/pointer arguments and returns an
+/// integer/pointer. This matches the SysV x86-64 and AAPCS64 ABIs, so the
+/// transmute is safe in practice for pointer/int args.
+#[cfg(unix)]
+type DynFn = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+
+/// One GET request (optionally streamed to a file so binary GGUF downloads
+/// never round-trip through a string). Follows up to 5 redirects. Returns
+/// (status, body bytes).
+fn http_fetch(url: &str, to_path: Option<&str>) -> Result<(f64, Vec<u8>), String> {
+    let mut target = url.to_string();
+    for _ in 0..5 {
+        let rest = target
+            .strip_prefix("http://")
+            .ok_or_else(|| format!("http_get: only http:// URLs are supported (got '{}')", url))?;
+        let (hostport, path) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, "/"),
+        };
+        let (host, port) = match hostport.find(':') {
+            Some(i) => (
+                &hostport[..i],
+                hostport[i + 1..]
+                    .parse::<u16>()
+                    .map_err(|_| format!("http_get: bad port in '{}'", url))?,
+            ),
+            None => (hostport, 80u16),
+        };
+        if host.is_empty() {
+            return Err(format!("http_get: bad URL '{}'", url));
+        }
+        let mut stream = TcpStream::connect((host, port))
+            .map_err(|e| format!("http_get: connect to {}:{}: {}", host, port, e))?;
+        let req = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: corros/0.1\r\n\r\n",
+            path, hostport
+        );
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| format!("http_get: send: {}", e))?;
+        stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|e| format!("http_get: read: {}", e))?;
+        let head = match String::from_utf8_lossy(&raw).find("\r\n\r\n") {
+            Some(i) => String::from_utf8_lossy(&raw[..i]).into_owned(),
+            None => String::new(),
+        };
+        let status: f64 = head
+            .lines()
+            .next()
+            .and_then(|l| l.split(' ').nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        if (300.0..400.0).contains(&status) {
+            if let Some(loc) = head
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("location:"))
+                .and_then(|l| l.splitn(2, ':').nth(1))
+            {
+                target = loc.trim().to_string();
+                continue;
+            }
+        }
+        let body_start = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(raw.len());
+        if let Some(p) = to_path {
+            std::fs::write(p, &raw[body_start..])
+                .map_err(|e| format!("http_get: write '{}': {}", p, e))?;
+        }
+        return Ok((status, raw[body_start..].to_vec()));
+    }
+    Err(format!("http_get: too many redirects for '{}'", url))
+}
+
 /// Execute one of the builtins available to compiled programs (`speak`,
 /// `size`, `mcall`, ...). Stateless apart from the output buffer, the echo
 /// flag, and the clock, so both the tree-walking seed and the native
@@ -1650,6 +1781,323 @@ pub(crate) fn native_builtin(
                     ));
                 }
                 Ok(Value::Str(out.into()))
+            }
+            // --- Host services: networking, HTTP, files, processes, FFI ---
+            // Power the Corros-written Ollama server. Handles are opaque u64s.
+            "net_listen" => {
+                expect_args("net_listen", args, 1)?;
+                let port = want_num("net_listen", &args[0])? as u16;
+                let listener = TcpListener::bind(("0.0.0.0", port))
+                    .map_err(|e| format!("net_listen: cannot bind port {}: {}", port, e))?;
+                let h = next_handle();
+                listeners().get_or_insert_with(HashMap::new).insert(h, listener);
+                Ok(Value::Num(h as f64))
+            }
+            "net_accept" => {
+                expect_args("net_accept", args, 1)?;
+                let h = want_num("net_accept", &args[0])? as u64;
+                let listener = listeners()
+                    .get_or_insert_with(HashMap::new)
+                    .get(&h)
+                    .and_then(|l| l.try_clone().ok())
+                    .ok_or_else(|| "net_accept: no such listener".to_string())?;
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        let ch = next_handle();
+                        stream.set_read_timeout(Some(Duration::from_millis(30_000))).ok();
+                        conns()
+                            .get_or_insert_with(HashMap::new)
+                            .insert(ch, (stream, 30_000));
+                        Ok(Value::Num(ch as f64))
+                    }
+                    Err(e) => Err(format!("net_accept: {}", e)),
+                }
+            }
+            "net_read" => {
+                // net_read(conn, max) — read up to max bytes. Returns "" on
+                // EOF or when the read timeout elapses (a stalled client must
+                // never hang the server).
+                expect_args("net_read", args, 2)?;
+                let ch = want_num("net_read", &args[0])? as u64;
+                let max = want_num("net_read", &args[1])? as usize;
+                let mut guard = conns();
+                let map = guard.get_or_insert_with(HashMap::new);
+                let (stream, timeout_ms) = map
+                    .get_mut(&ch)
+                    .ok_or_else(|| "net_read: no such connection".to_string())?;
+                if *timeout_ms > 0 {
+                    stream.set_read_timeout(Some(Duration::from_millis(*timeout_ms))).ok();
+                }
+                let mut buf = vec![0u8; max.max(1)];
+                match stream.read(&mut buf) {
+                    Ok(0) => Ok(Value::Str("".into())),
+                    Ok(n) => Ok(Value::Str(
+                        String::from_utf8_lossy(&buf[..n]).into_owned().into(),
+                    )),
+                    Err(_) => Ok(Value::Str("".into())),
+                }
+            }
+            "net_write" => {
+                expect_args("net_write", args, 2)?;
+                let ch = want_num("net_write", &args[0])? as u64;
+                let data = want_str("net_write", &args[1])?;
+                let mut guard = conns();
+                let map = guard.get_or_insert_with(HashMap::new);
+                let (stream, _) = map
+                    .get_mut(&ch)
+                    .ok_or_else(|| "net_write: no such connection".to_string())?;
+                let n = stream
+                    .write(data.as_bytes())
+                    .map_err(|e| format!("net_write: {}", e))?;
+                Ok(Value::Num(n as f64))
+            }
+            "net_close" => {
+                expect_args("net_close", args, 1)?;
+                let ch = want_num("net_close", &args[0])? as u64;
+                let mut guard = conns();
+                guard.get_or_insert_with(HashMap::new).remove(&ch);
+                Ok(Value::Nil)
+            }
+            "net_timeout" => {
+                // net_timeout(conn, ms) — set the read timeout (0 = wait forever).
+                expect_args("net_timeout", args, 2)?;
+                let ch = want_num("net_timeout", &args[0])? as u64;
+                let ms = want_num("net_timeout", &args[1])? as u64;
+                let mut guard = conns();
+                if let Some((stream, t)) = guard.get_or_insert_with(HashMap::new).get_mut(&ch) {
+                    *t = ms;
+                    if ms > 0 {
+                        stream.set_read_timeout(Some(Duration::from_millis(ms))).ok();
+                    } else {
+                        stream.set_read_timeout(None).ok();
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            "http_get" => {
+                // http_get(url) -> [status, body]
+                expect_args("http_get", args, 1)?;
+                let url = want_str("http_get", &args[0])?;
+                let (status, body) = http_fetch(&url, None)?;
+                Ok(Value::List(Rc::new(RefCell::new(vec![
+                    Value::Num(status),
+                    Value::Str(String::from_utf8_lossy(&body).into_owned().into()),
+                ]))))
+            }
+            "http_download" => {
+                // http_download(url, path) -> status (streams raw bytes to file)
+                expect_args("http_download", args, 2)?;
+                let url = want_str("http_download", &args[0])?;
+                let path = want_str("http_download", &args[1])?;
+                let (status, _) = http_fetch(&url, Some(&path))?;
+                Ok(Value::Num(status))
+            }
+            "file_write" => {
+                expect_args("file_write", args, 2)?;
+                let path = want_str("file_write", &args[0])?;
+                let data = want_str("file_write", &args[1])?;
+                std::fs::write(&path, data.as_bytes())
+                    .map_err(|e| format!("file_write '{}': {}", path, e))?;
+                Ok(Value::Nil)
+            }
+            "file_append" => {
+                expect_args("file_append", args, 2)?;
+                let path = want_str("file_append", &args[0])?;
+                let data = want_str("file_append", &args[1])?;
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .map_err(|e| format!("file_append '{}': {}", path, e))?;
+                f.write_all(data.as_bytes())
+                    .map_err(|e| format!("file_append '{}': {}", path, e))?;
+                Ok(Value::Nil)
+            }
+            "getenv" => {
+                // getenv(name) -> value (or "" when unset)
+                expect_args("getenv", args, 1)?;
+                let name = want_str("getenv", &args[0])?;
+                Ok(Value::Str(
+                    std::env::var(&name).unwrap_or_default().into(),
+                ))
+            }
+            "sys_exec" => {
+                // sys_exec(cmd, [args]) -> [status, stdout]
+                expect_args("sys_exec", args, 2)?;
+                let cmd = want_str("sys_exec", &args[0])?;
+                let list = want_str_list("sys_exec", &args[1])?;
+                let out = std::process::Command::new(&cmd)
+                    .args(&list)
+                    .output()
+                    .map_err(|e| format!("sys_exec '{}': {}", cmd, e))?;
+                let code = out.status.code().unwrap_or(-1) as f64;
+                Ok(Value::List(Rc::new(RefCell::new(vec![
+                    Value::Num(code),
+                    Value::Str(String::from_utf8_lossy(&out.stdout).into_owned().into()),
+                ]))))
+            }
+            "load_lib" => {
+                expect_args("load_lib", args, 1)?;
+                let path = want_str("load_lib", &args[0])?;
+                #[cfg(unix)]
+                {
+                    let cpath = std::ffi::CString::new(path.as_str())
+                        .map_err(|_| "load_lib: path contains a NUL byte".to_string())?;
+                    let h = unsafe { dlopen(cpath.as_ptr(), RTLD_NOW) };
+                    if h.is_null() {
+                        // 0 = failure; the caller decides (e.g. copy the lib
+                        // to a loadable location and retry). Some filesystems
+                        // (Android's sdcard fuse mount) refuse dlopen.
+                        eprintln!("load_lib: could not dlopen '{}'", path);
+                        return Ok(Value::Num(0.0));
+                    }
+                    let id = next_handle();
+                    let mut guard = libs();
+                    guard.get_or_insert_with(HashMap::new).insert(id, h as usize);
+                    Ok(Value::Num(id as f64))
+                }
+                #[cfg(not(unix))]
+                {
+                    Err("load_lib: only supported on unix".to_string())
+                }
+            }
+            "lib_call" => {
+                // lib_call(lib, "fn", [i64 args...]) -> i64 result. Pointers
+                // travel as u64 bit patterns (canonical user pointers are < 2^48,
+                // so f64 round-trips them exactly).
+                expect_args("lib_call", args, 3)?;
+                let id = want_num("lib_call", &args[0])? as u64;
+                let name = want_str("lib_call", &args[1])?;
+                let arg_list = match &args[2] {
+                    Value::List(l) => l.borrow().clone(),
+                    _ => return Err("lib_call: third argument must be a list".to_string()),
+                };
+                #[cfg(unix)]
+                {
+                    let mut guard = libs();
+                    let lib = guard
+                        .get_or_insert_with(HashMap::new)
+                        .get(&id)
+                        .copied()
+                        .ok_or_else(|| "lib_call: no such library".to_string())?
+                        as *mut std::ffi::c_void;
+                    let cname = std::ffi::CString::new(name.as_str())
+                        .map_err(|_| "lib_call: symbol name contains a NUL byte".to_string())?;
+                    let sym = unsafe { dlsym(lib, cname.as_ptr()) };
+                    if sym.is_null() {
+                        return Err(format!("lib_call: symbol '{}' not found", name));
+                    }
+                    let f: DynFn = unsafe { std::mem::transmute(sym) };
+                    let mut a = [0i64; 8];
+                    for (i, v) in arg_list.iter().enumerate().take(8) {
+                        match v {
+                            Value::Num(n) => a[i] = (*n as u64) as i64,
+                            Value::Bool(b) => a[i] = if *b { 1 } else { 0 },
+                            _ => {
+                                return Err(
+                                    "lib_call: arguments must be numbers (integers or pointers)"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                    let r = unsafe { f(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]) };
+                    Ok(Value::Num(r as f64))
+                }
+                #[cfg(not(unix))]
+                {
+                    Err("lib_call: only supported on unix".to_string())
+                }
+            }
+            "mem_i64" => {
+                // mem_i64(ptr, index) — read the i64 at ptr + index*8.
+                expect_args("mem_i64", args, 2)?;
+                let ptr = want_num("mem_i64", &args[0])? as u64 as *const i64;
+                let idx = want_num("mem_i64", &args[1])? as usize;
+                let v = unsafe { *ptr.add(idx) };
+                Ok(Value::Num(v as f64))
+            }
+            "mem_alloc" => {
+                // mem_alloc(bytes) -> pointer to 8-aligned scratch memory
+                // (token buffers passed to the engine shim).
+                expect_args("mem_alloc", args, 1)?;
+                let n = want_num("mem_alloc", &args[0])? as usize;
+                if n == 0 {
+                    return Err("mem_alloc: size must be positive".to_string());
+                }
+                let layout = std::alloc::Layout::from_size_align(n, 8)
+                    .map_err(|_| "mem_alloc: bad size".to_string())?;
+                let p = unsafe { std::alloc::alloc(layout) };
+                if p.is_null() {
+                    return Err("mem_alloc: out of memory".to_string());
+                }
+                let id = p as u64;
+                MEMS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, n);
+                Ok(Value::Num(id as f64))
+            }
+            "mem_free" => {
+                expect_args("mem_free", args, 1)?;
+                let id = want_num("mem_free", &args[0])? as u64;
+                let mut guard = MEMS.lock().unwrap();
+                let n = guard
+                    .get_or_insert_with(HashMap::new)
+                    .remove(&id)
+                    .ok_or_else(|| "mem_free: not a tracked allocation".to_string())?;
+                let layout = std::alloc::Layout::from_size_align(n, 8)
+                    .map_err(|_| "mem_free: bad size".to_string())?;
+                unsafe {
+                    std::alloc::dealloc(id as *mut u8, layout);
+                }
+                Ok(Value::Nil)
+            }
+            "cstr_alloc" => {
+                // cstr_alloc(s) -> pointer to a C string (leak until cstr_free).
+                expect_args("cstr_alloc", args, 1)?;
+                let s = want_str("cstr_alloc", &args[0])?;
+                let c = std::ffi::CString::new(s.as_str())
+                    .map_err(|_| "cstr_alloc: string contains a NUL byte".to_string())?;
+                let p = c.into_raw();
+                Ok(Value::Num(p as u64 as f64))
+            }
+            "cstr_get" => {
+                // cstr_get(ptr) -> string (reads up to the NUL terminator).
+                expect_args("cstr_get", args, 1)?;
+                let ptr = want_num("cstr_get", &args[0])? as u64 as *const u8;
+                let mut v = Vec::new();
+                unsafe {
+                    let mut p = ptr;
+                    loop {
+                        let b = *p;
+                        if b == 0 {
+                            break;
+                        }
+                        v.push(b);
+                        p = p.add(1);
+                    }
+                }
+                Ok(Value::Str(String::from_utf8_lossy(&v).into_owned().into()))
+            }
+            "cstr_free" => {
+                expect_args("cstr_free", args, 1)?;
+                let ptr = want_num("cstr_free", &args[0])? as u64 as *mut std::ffi::c_char;
+                unsafe {
+                    drop(std::ffi::CString::from_raw(ptr));
+                }
+                Ok(Value::Nil)
+            }
+            "lib_close" => {
+                expect_args("lib_close", args, 1)?;
+                let id = want_num("lib_close", &args[0])? as u64;
+                #[cfg(unix)]
+                {
+                    let mut guard = libs();
+                    if let Some(h) = guard.get_or_insert_with(HashMap::new).remove(&id) {
+                        unsafe {
+                            dlclose(h as *mut std::ffi::c_void);
+                        }
+                    }
+                }
+                Ok(Value::Nil)
             }
             other => Err(format!("unknown builtin '{}'", other)),
     }

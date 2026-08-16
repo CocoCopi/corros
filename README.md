@@ -22,6 +22,17 @@ each i in 1..=5 {
 }
 ```
 
+## Host services: Corros can talk to the OS
+
+Corros isn't just arithmetic — it ships host services implemented in the
+seed: **sockets** (`net_listen`, `net_accept`, `net_read`, `net_write`), an
+**HTTP client** (`http_get`, `http_download`), **files and processes**
+(`file_write`, `file_append`, `sys_exec`, `getenv`), and a **dynamic FFI**
+(`load_lib`, `lib_call`, `lib_close` + `mem_*`/`cstr_*` helpers) so Corros
+programs can dlopen any C library. It was enough to write **corllama** — a
+local LLM server with a streaming REST API — entirely in Corros
+([github.com/CocoCopi/corllama](https://github.com/CocoCopi/corllama)).
+
 ## Benchmarks
 
 `corros --compile` runs a whole-program type analysis over your program's

@@ -340,6 +340,11 @@ impl NativeVm {
             // The CLI bridge (src/cli.cor).
             "version", "run", "run_bc", "run_ref", "dump", "run_src_try",
             "native_compile",
+            // Host services (the Corros-written Ollama server).
+            "net_listen", "net_accept", "net_read", "net_write", "net_close", "net_timeout",
+            "http_get", "http_download", "file_write", "file_append", "sys_exec",
+            "load_lib", "lib_call", "mem_i64", "cstr_alloc", "cstr_get", "cstr_free",
+            "mem_alloc", "mem_free", "lib_close", "getenv",
         ];
         for name in names {
             let key: Rc<str> = name.into();

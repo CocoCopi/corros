@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corros — a programming language forged from scratch</title>
+<meta name="description" content="Corros is a bytecode-compiled scripting language with its own lexer, compiler, and virtual machine — written in Corros itself. Syntax that belongs to no other language, self-hosting, and compiled speed at the C ceiling.">
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #101418; color: #e8e6e3; line-height: 1.6; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px; }
+  h1 { font-size: 2.6rem; margin: 0 0 8px; letter-spacing: -0.5px; }
+  .tag { color: #9aa4b2; font-size: 1.1rem; margin-bottom: 32px; }
+  pre { background: #1a2027; border: 1px solid #2a323c; border-radius: 10px; padding: 18px; overflow-x: auto; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  a { color: #7fb3ff; }
+  .btn { display: inline-block; background: #2f81f7; color: #fff; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-weight: 600; margin: 4px 4px 4px 0; }
+  .btn.gh { background: #21262d; border: 1px solid #3d444d; }
+  h2 { margin-top: 40px; border-bottom: 1px solid #2a323c; padding-bottom: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #2a323c; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Corros</h1>
+  <p class="tag">A programming language forged from scratch — its own lexer, its own compiler, its own virtual machine — and already written in Corros itself.</p>
+
+  <a class="btn" href="https://github.com/CocoCopi/corros">GitHub repository</a>
+  <a class="btn gh" href="https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh">Install</a>
+
+  <h2>Why Corros</h2>
+  <p>Corros has a syntax that belongs to <strong>no other language</strong> — the foundry vocabulary: <code>forge</code> for variables, <code>craft</code> for functions, <code>when</code>/<code>whilst</code>/<code>each</code> for control flow, <code>speak</code> to print, <code>flaw</code> to raise an error. Rust is written in Rust; Corros is written in Rust and already compiles <strong>itself</strong> — a byte-identical bootstrap chain (<code>bash demo.sh</code>) proves the compiler and VM written in Corros are the real thing.</p>
+
+  <pre><code>// This is Corros. Read it out loud.
+forge greet = craft(name) {
+  return "hello, " + name
+}
+
+each i in 1..=5 {
+  when i % 2 == 0 { onward }
+  speak(greet("corros"), i)
+}</code></pre>
+
+  <h2>Speed</h2>
+  <p><code>corros --compile</code> types your program, emits C, and builds a native binary with <code>cc -O3</code> — compiled Corros sits at the C ceiling and beats Rust, Go, and Python on the repo's benchmark suite (<code>bash bench/run.sh</code>).</p>
+  <table>
+    <tr><th>fib(30)</th><th>time</th></tr>
+    <tr><td>Corros --compile</td><td>~0.03s</td></tr>
+    <tr><td>hand-written C</td><td>parity (same compiler)</td></tr>
+    <tr><td>Rust (-O)</td><td>~0.04s</td></tr>
+    <tr><td>Go</td><td>~0.06s</td></tr>
+  </table>
+
+  <h2>Corros can talk to the OS</h2>
+  <p>The language ships host services: sockets and an HTTP client, file and process access, and a dynamic FFI (<code>load_lib</code> / <code>lib_call</code>) — enough to write a local LLM server (<a href="https://github.com/CocoCopi/corllama">corllama</a>) entirely in Corros.</p>
+
+  <h2>Install</h2>
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | sh</code></pre>
+  <p>Or build from source: <code>cargo build --release</code> then put <code>corros</code> on your PATH. Requires nothing but a C compiler for <code>--compile</code>.</p>
+
+  <p style="margin-top:48px;color:#9aa4b2">Corros — the language that corrodes the competition. 🦀</p>
+</div>
+</body>
+</html>
