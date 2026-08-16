@@ -1363,7 +1363,44 @@ type DynFn = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64
 /// One GET request (optionally streamed to a file so binary GGUF downloads
 /// never round-trip through a string). Follows up to 5 redirects. Returns
 /// (status, body bytes).
+/// Fetch over https. Corros has no TLS stack in-tree, so https is delegated
+/// to curl (present on every target platform): redirects are followed, the
+/// status code is captured with `-w`, and the body goes to stdout or to `-o
+/// file`. Returns (status, body) like the plain-http path.
+fn http_fetch_https(url: &str, to_path: Option<&str>) -> Result<(f64, Vec<u8>), String> {
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-sSL", "-w", "\n%{http_code}", url]);
+    if let Some(p) = to_path {
+        cmd.arg("-o").arg(p);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("http_get: curl: {}", e))?;
+    // curl appends "\n<status>" after the body (or alone when -o is used).
+    let text = String::from_utf8_lossy(&out.stdout);
+    let code: f64 = text
+        .rsplit('\n')
+        .next()
+        .unwrap_or("0")
+        .trim()
+        .parse()
+        .unwrap_or(0.0);
+    let body = if to_path.is_some() {
+        Vec::new()
+    } else {
+        // strip the trailing separator + status line curl appended
+        match text.rfind('\n') {
+            Some(i) => out.stdout[..i].to_vec(),
+            None => Vec::new(),
+        }
+    };
+    Ok((code, body))
+}
+
 fn http_fetch(url: &str, to_path: Option<&str>) -> Result<(f64, Vec<u8>), String> {
+    if url.starts_with("https://") {
+        return http_fetch_https(url, to_path);
+    }
     let mut target = url.to_string();
     for _ in 0..5 {
         let rest = target
