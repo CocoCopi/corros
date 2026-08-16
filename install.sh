@@ -4,8 +4,8 @@
 #
 # Downloads a prebuilt binary from the latest GitHub release (fast), falling
 # back to building from source when none exists for your platform. Installs
-# `corros` and the Corros-written interpreter (compiler.cor, vm.cor, cli.cor,
-# prelude.cor, codegen.cor) side by side, which the binary looks up next to itself.
+# `corros` and the Corros-written interpreter (compiler.cro, vm.cro, cli.cro,
+# prelude.cro, codegen.cro) side by side, which the binary looks up next to itself.
 set -euo pipefail
 
 # --- platform detection ---------------------------------------------------
@@ -57,7 +57,7 @@ else
   fi
   repo="$tmp/corros"
   if ! git clone --depth 1 https://github.com/CocoCopi/corros.git "$repo" 2>/dev/null \
-     && ! { [[ -f Cargo.toml && -f src/prelude.cor ]] && repo="$(pwd)"; }; then
+     && ! { [[ -f Cargo.toml && -f src/prelude.cro ]] && repo="$(pwd)"; }; then
     echo "corros: could not obtain the sources" >&2
     exit 1
   fi
@@ -68,7 +68,7 @@ fi
 
 # --- install --------------------------------------------------------------
 install -m 0755 "$bin" "$bindir/corros"
-for cor in compiler.cor vm.cor cli.cor prelude.cor codegen.cor; do
+for cor in compiler.cro vm.cro cli.cro prelude.cro codegen.cro; do
   if [[ -f "$src_dir/$cor" ]]; then
     install -m 0644 "$src_dir/$cor" "$bindir/$cor"
   else

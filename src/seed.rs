@@ -6,12 +6,12 @@
 //! runs just enough of Corros to boot the real interpreter, which lives in
 //! Corros itself:
 //!
-//!   - `src/compiler.cor`  — the Corros lexer + bytecode compiler
-//!   - `src/vm.cor`        — the Corros virtual machine
-//!   - `src/prelude.cor`   — the Corros standard library
+//!   - `src/compiler.cro`  — the Corros lexer + bytecode compiler
+//!   - `src/vm.cro`        — the Corros virtual machine
+//!   - `src/prelude.cro`   — the Corros standard library
 //!
-//! `corros hello.cor` therefore does: the seed runs the Corros compiler (which
-//! compiles hello.cor to bytecode), then the seed runs the Corros VM (which
+//! `corros hello.cro` therefore does: the seed runs the Corros compiler (which
+//! compiles hello.cro to bytecode), then the seed runs the Corros VM (which
 //! executes that bytecode). The language you use *is* the Corros-written one;
 //! the seed only knows the disciplined subset the self-hosted files are
 //! written in (craft/forge/whilst/when/each, lists, strings, numbers, ranges,
@@ -1713,11 +1713,11 @@ pub(crate) fn native_builtin(
                     )),
                 }
             }
-            // --- CLI bridge: used by src/cli.cor (the Corros-written CLI) ---
+            // --- CLI bridge: used by src/cli.cro (the Corros-written CLI) ---
             "version" => Ok(Value::Str(env!("CARGO_PKG_VERSION").into())),
             "run" => {
                 // run(path, [args]) — compile and execute a program, echoing
-                // its output live (exactly like `corros file.cor`).
+                // its output live (exactly like `corros file.cro`).
                 expect_args("run", args, 2)?;
                 let path = want_str("run", &args[0])?;
                 let list = want_str_list("run", &args[1])?;
@@ -1781,14 +1781,19 @@ pub(crate) fn native_builtin(
                 let out = if let Some(o) = list.first() {
                     o.clone()
                 } else {
-                    path.trim_end_matches(".cor").to_string()
+                    // Strip the canonical .cro extension (or the legacy
+                    // .cor alias) for the output binary name.
+                    path.strip_suffix(".cro")
+                        .or_else(|| path.strip_suffix(".cor"))
+                        .unwrap_or(&path)
+                        .to_string()
                 };
                 // Compile WITHOUT the prelude: the prelude uses methods,
                 // closures, and maps that the static analyzer cannot type.
                 // Programs that only use plain functions, numbers, ranges,
                 // and builtins are what --compile targets.
                 let bytecode = compile_user_program_no_prelude(&path)?;
-                // The AOT backend is itself written in Corros (src/codegen.cor):
+                // The AOT backend is itself written in Corros (src/codegen.cro):
                 // run its compiled bytecode on the user's bytecode and capture
                 // the C source it prints.
                 let bc_path = write_temp("corros-src-bc", &bytecode)?;
@@ -2485,8 +2490,8 @@ fn range_holds(receiver: &Value, args: &[Value]) -> Result<Value, String> {
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Locate one of the Corros-written source files (`compiler.cor`, `vm.cor`,
-/// `prelude.cor`). Search order: `$CORROS_LIB` directory, next to the running
+/// Locate one of the Corros-written source files (`compiler.cro`, `vm.cro`,
+/// `prelude.cro`). Search order: `$CORROS_LIB` directory, next to the running
 /// binary, `../src` from it, `./src` (development), and the crate directory.
 fn find_src(name: &str) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -2518,11 +2523,11 @@ fn write_temp(prefix: &str, content: &str) -> Result<PathBuf, String> {
 }
 
 /// Compile a program with the Corros-written compiler (the seed interprets
-/// `src/compiler.cor` from source) and return its bytecode text.
+/// `src/compiler.cro` from source) and return its bytecode text.
 fn compile_to_bytecode(path: &str, args: &[String]) -> Result<String, String> {
-    let compiler_cor = find_src("compiler.cor")
-        .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
-    let prelude = find_src("prelude.cor");
+    let compiler_cor = find_src("compiler.cro")
+        .ok_or_else(|| "corros: cannot find src/compiler.cro (the Corros-written compiler)".to_string())?;
+    let prelude = find_src("prelude.cro");
     let mut compile_args = vec![path.to_string()];
     if let Some(p) = &prelude {
         compile_args.push(p.display().to_string());
@@ -2556,15 +2561,15 @@ fn fnv1a(data: &[u8]) -> u64 {
 }
 
 /// Where the compiled compiler is cached: a content-addressed bytecode file
-/// keyed on `compiler.cor` and `prelude.cor`, so the seed never re-interprets
+/// keyed on `compiler.cro` and `prelude.cro`, so the seed never re-interprets
 /// the compiler for programs it has already seen the sources of.
 fn compiler_cache_path() -> Result<PathBuf, String> {
-    let compiler_cor = find_src("compiler.cor")
-        .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
+    let compiler_cor = find_src("compiler.cro")
+        .ok_or_else(|| "corros: cannot find src/compiler.cro (the Corros-written compiler)".to_string())?;
     let csrc = std::fs::read(&compiler_cor)
         .map_err(|e| format!("corros: could not read '{}': {}", compiler_cor.display(), e))?;
     let mut hash = fnv1a(&csrc);
-    if let Some(p) = find_src("prelude.cor") {
+    if let Some(p) = find_src("prelude.cro") {
         if let Ok(psrc) = std::fs::read(&p) {
             hash ^= fnv1a(&psrc).rotate_left(32);
         }
@@ -2572,7 +2577,7 @@ fn compiler_cache_path() -> Result<PathBuf, String> {
     Ok(std::env::temp_dir().join(format!("corros-compiler-{:016x}.bc", hash)))
 }
 
-/// The compiled compiler: `compiler.cor` compiled once (with the prelude
+/// The compiled compiler: `compiler.cro` compiled once (with the prelude
 /// spliced, exactly like any program) and cached. `demo.sh` proves the
 /// compiled compiler is byte-identical to the source, so running it on the
 /// native executor compiles programs exactly as the seed would — without the
@@ -2582,8 +2587,8 @@ fn get_compiler_bytecode() -> Result<String, String> {
     if let Ok(text) = std::fs::read_to_string(&cache) {
         return Ok(text);
     }
-    let compiler_cor = find_src("compiler.cor")
-        .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
+    let compiler_cor = find_src("compiler.cro")
+        .ok_or_else(|| "corros: cannot find src/compiler.cro (the Corros-written compiler)".to_string())?;
     let bytecode = compile_to_bytecode(&compiler_cor.display().to_string(), &[])?;
     let _ = std::fs::write(&cache, &bytecode);
     Ok(bytecode)
@@ -2593,7 +2598,7 @@ fn get_compiler_bytecode() -> Result<String, String> {
 /// return its bytecode text.
 fn compile_user_program(path: &str, args: &[String]) -> Result<String, String> {
     let compiler_bc = get_compiler_bytecode()?;
-    let prelude = find_src("prelude.cor");
+    let prelude = find_src("prelude.cro");
     let mut compile_args = vec![path.to_string()];
     if let Some(p) = &prelude {
         compile_args.push(p.display().to_string());
@@ -2614,17 +2619,17 @@ fn compile_user_program_no_prelude(path: &str) -> Result<String, String> {
 }
 
 /// Content-addressed cache path for the compiled AOT backend
-/// (`src/codegen.cor` compiled with the prelude, by the cached compiler).
+/// (`src/codegen.cro` compiled with the prelude, by the cached compiler).
 fn codegen_cache_path() -> Result<PathBuf, String> {
-    let cg = find_src("codegen.cor")
-        .ok_or_else(|| "corros: cannot find src/codegen.cor (the Corros-written AOT backend)".to_string())?;
+    let cg = find_src("codegen.cro")
+        .ok_or_else(|| "corros: cannot find src/codegen.cro (the Corros-written AOT backend)".to_string())?;
     let mut hash = fnv1a(&std::fs::read(&cg).map_err(|e| e.to_string())?);
-    if let Some(p) = find_src("prelude.cor") {
+    if let Some(p) = find_src("prelude.cro") {
         if let Ok(psrc) = std::fs::read(&p) {
             hash ^= fnv1a(&psrc).rotate_left(32);
         }
     }
-    if let Some(p) = find_src("compiler.cor") {
+    if let Some(p) = find_src("compiler.cro") {
         if let Ok(csrc) = std::fs::read(&p) {
             hash ^= fnv1a(&csrc).rotate_left(16);
         }
@@ -2633,20 +2638,20 @@ fn codegen_cache_path() -> Result<PathBuf, String> {
 }
 
 /// The compiled AOT backend bytecode, cached so --compile skips recompiling
-/// codegen.cor on every run.
+/// codegen.cro on every run.
 fn get_codegen_bytecode() -> Result<String, String> {
     let cache = codegen_cache_path()?;
     if let Ok(text) = std::fs::read_to_string(&cache) {
         return Ok(text);
     }
-    let cg = find_src("codegen.cor")
-        .ok_or_else(|| "corros: cannot find src/codegen.cor (the Corros-written AOT backend)".to_string())?;
+    let cg = find_src("codegen.cro")
+        .ok_or_else(|| "corros: cannot find src/codegen.cro (the Corros-written AOT backend)".to_string())?;
     let bytecode = compile_user_program(&cg.display().to_string(), &[])?;
     let _ = std::fs::write(&cache, &bytecode);
     Ok(bytecode)
 }
 
-/// Run a Corros program: the cached compiled compiler (`compiler.cor`
+/// Run a Corros program: the cached compiled compiler (`compiler.cro`
 /// compiled once, then run at native speed) compiles the program, and the
 /// native executor (`src/native.rs`) runs that bytecode. Returns the
 /// program's `speak` output. This is the same path the `corros` binary uses
@@ -2665,7 +2670,7 @@ pub fn run_file(path: &str, args: &[String], echo: bool) -> Result<Vec<String>, 
     crate::native::run_bytecode(&bytecode, args, echo)
 }
 
-/// The pure-Corros path: the seed runs `src/vm.cor`, which interprets the
+/// The pure-Corros path: the seed runs `src/vm.cro`, which interprets the
 /// bytecode the Corros compiler produced. This is the reference interpreter
 /// (the `--reference` flag and `demo.sh`); it is correct but slow, because
 /// the VM's dispatch is itself interpreted.
@@ -2680,14 +2685,14 @@ pub fn run_bytecode_on_native(text: &str, args: &[String], echo: bool) -> Result
 }
 
 /// Execute pre-compiled bytecode text through the Corros-written VM
-/// (`src/vm.cor`), for the self-hosting demo.
+/// (`src/vm.cro`), for the self-hosting demo.
 pub fn run_bytecode_on_reference(text: &str, args: &[String], echo: bool) -> Result<Vec<String>, String> {
     let bc_path = write_temp("corros-bc", text)?;
     let mut vm_args = vec![bc_path.display().to_string()];
     vm_args.extend(args.iter().cloned());
     // Run the *compiled* VM on the native executor — the same "compiled VM
     // runs compiled code" step demo.sh proves — instead of tree-walking
-    // vm.cor's source through the seed. The reference interpreter is then
+    // vm.cro's source through the seed. The reference interpreter is then
     // only as slow as its own Corros-written dispatch, not the seed's.
     let vm_bc = get_vm_bytecode()?;
     let result = crate::native::run_bytecode(&vm_bc, &vm_args, echo);
@@ -2695,18 +2700,18 @@ pub fn run_bytecode_on_reference(text: &str, args: &[String], echo: bool) -> Res
     result
 }
 
-/// Content-addressed cache path for the compiled VM (`src/vm.cor` compiled
+/// Content-addressed cache path for the compiled VM (`src/vm.cro` compiled
 /// with the prelude, by the cached compiled compiler).
 fn vm_cache_path() -> Result<PathBuf, String> {
-    let vm_cor = find_src("vm.cor")
-        .ok_or_else(|| "corros: cannot find src/vm.cor (the Corros-written VM)".to_string())?;
+    let vm_cor = find_src("vm.cro")
+        .ok_or_else(|| "corros: cannot find src/vm.cro (the Corros-written VM)".to_string())?;
     let mut hash = fnv1a(&std::fs::read(&vm_cor).map_err(|e| e.to_string())?);
-    if let Some(p) = find_src("prelude.cor") {
+    if let Some(p) = find_src("prelude.cro") {
         if let Ok(psrc) = std::fs::read(&p) {
             hash ^= fnv1a(&psrc).rotate_left(32);
         }
     }
-    if let Some(p) = find_src("compiler.cor") {
+    if let Some(p) = find_src("compiler.cro") {
         if let Ok(csrc) = std::fs::read(&p) {
             hash ^= fnv1a(&csrc).rotate_left(16);
         }
@@ -2715,14 +2720,14 @@ fn vm_cache_path() -> Result<PathBuf, String> {
 }
 
 /// The compiled VM bytecode, cached so the reference path skips recompiling
-/// vm.cor on every run.
+/// vm.cro on every run.
 fn get_vm_bytecode() -> Result<String, String> {
     let cache = vm_cache_path()?;
     if let Ok(text) = std::fs::read_to_string(&cache) {
         return Ok(text);
     }
-    let vm_cor = find_src("vm.cor")
-        .ok_or_else(|| "corros: cannot find src/vm.cor (the Corros-written VM)".to_string())?;
+    let vm_cor = find_src("vm.cro")
+        .ok_or_else(|| "corros: cannot find src/vm.cro (the Corros-written VM)".to_string())?;
     let bytecode = compile_user_program(&vm_cor.display().to_string(), &[])?;
     let _ = std::fs::write(&cache, &bytecode);
     Ok(bytecode)
@@ -2735,9 +2740,9 @@ fn run_chain(path: &str, args: &[String]) -> Result<Vec<String>, String> {
 /// `--dump FILE`: run the Corros compiler on FILE and return the bytecode it
 /// prints, without executing it.
 pub fn dump_bytecode(path: &str) -> Result<Vec<String>, String> {
-    let compiler_cor = find_src("compiler.cor")
-        .ok_or_else(|| "corros: cannot find src/compiler.cor (the Corros-written compiler)".to_string())?;
-    let prelude = find_src("prelude.cor");
+    let compiler_cor = find_src("compiler.cro")
+        .ok_or_else(|| "corros: cannot find src/compiler.cro (the Corros-written compiler)".to_string())?;
+    let prelude = find_src("prelude.cro");
     let mut args = vec![path.to_string()];
     if let Some(p) = &prelude {
         args.push(p.display().to_string());
@@ -2755,20 +2760,20 @@ pub fn run_vm_on(bc_path: &str, args: &[String], echo: bool) -> Result<Vec<Strin
 }
 
 /// `--reference --run-bc FILE.bc`: execute compiled bytecode text through the
-/// Corros-written VM (`src/vm.cor`) — the self-hosting demo path.
+/// Corros-written VM (`src/vm.cro`) — the self-hosting demo path.
 pub fn run_vm_on_reference(bc_path: &str, args: &[String], echo: bool) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(bc_path)
         .map_err(|e| format!("corros: could not open '{}': {}", bc_path, e))?;
     run_bytecode_on_reference(&text, args, echo)
 }
 
-/// Boot the Corros-written CLI (`src/cli.cor`): compile it with the cached
+/// Boot the Corros-written CLI (`src/cli.cro`): compile it with the cached
 /// compiled compiler and run it on the native executor, echoing its output
 /// live. Every decision the old Rust `main` made — flags, `--dump`,
 /// `--run-bc`, `--reference`, the REPL — is now made in Corros.
 pub fn run_cli(args: &[String]) -> Result<(), String> {
-    let cli_path = find_src("cli.cor")
-        .ok_or_else(|| "corros: cannot find src/cli.cor (the Corros-written CLI)".to_string())?;
+    let cli_path = find_src("cli.cro")
+        .ok_or_else(|| "corros: cannot find src/cli.cro (the Corros-written CLI)".to_string())?;
     let bytecode = compile_user_program(&cli_path.display().to_string(), &[])?;
     crate::native::run_bytecode(&bytecode, args, true)?;
     Ok(())

@@ -12,7 +12,7 @@ cargo build --release          # builds the `corros` binary
 cargo test                     # unit + integration tests
 cargo clippy --all-targets     # lint
 ./target/release/corros        # REPL
-./target/release/corros examples/hello.cor
+./target/release/corros examples/hello.cro
 ```
 
 No external dependencies — just a Rust toolchain (1.70+).
@@ -58,7 +58,7 @@ Look for issues labeled `good first issue`. Great starting points:
 | `src/repl.rs`, `src/main.rs` | REPL and CLI |
 | `src/error.rs` | compile/runtime error rendering |
 | `tests/language.rs` | integration tests (`run("...")` → captured output) |
-| `examples/*.cor` | runnable Corros programs |
+| `examples/*.cro` | runnable Corros programs |
 | `selfhost/` | the Corros compiler & VM written in Corros (`demo.sh` proves it) |
 | `.claude/skills/corros/` | the Claude Code skill describing the language |
 
@@ -77,14 +77,14 @@ Look for issues labeled `good first issue`. Great starting points:
 
 - Integration tests execute source and compare captured output:
   `assert_eq!(run("speak(1 + 1)"), vec!["2"]);`
-- `corros --dump file.cor` prints bytecode — use it when debugging the compiler.
+- `corros --dump file.cro` prints bytecode — use it when debugging the compiler.
 - The REPL wraps input in `speak((...))`, so assignments echo their value.
 - On some Android/sdcard mounts, `cargo` incremental compilation locks up; use
   `CARGO_INCREMENTAL=0 cargo build` there.
 
 ## Reporting issues
 
-- **Bugs**: include the smallest `.cor` file that reproduces the problem, the
+- **Bugs**: include the smallest `.cro` file that reproduces the problem, the
   `corros --dump` output if relevant, and your `corros -v` version.
 - **Security**: do **not** open a public issue — see [SECURITY.md](SECURITY.md).
 

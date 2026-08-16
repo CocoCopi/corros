@@ -1,5 +1,5 @@
 //! Integration tests: compile a Corros program with the Corros-written
-//! compiler (src/compiler.cor) and run its bytecode on the native executor,
+//! compiler (src/compiler.cro) and run its bytecode on the native executor,
 //! exactly like the `corros` binary does, then check the output.
 
 use corros::lexer;
@@ -303,7 +303,7 @@ fn calling_non_function_errors() {
 
 #[test]
 fn lexer_tokens() {
-    let toks = lexer::lex("forge x = 1..=5 ** 2", "t.cor").unwrap();
+    let toks = lexer::lex("forge x = 1..=5 ** 2", "t.cro").unwrap();
     let kinds: Vec<_> = toks.iter().map(|t| t.kind.clone()).collect();
     use corros::lexer::TokenKind::*;
     assert_eq!(

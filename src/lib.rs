@@ -1,8 +1,8 @@
 //! Corros: a scripting language forged from scratch.
 //!
-//! The language itself is implemented in Corros (`src/compiler.cor`, the
-//! lexer + bytecode compiler; `src/vm.cor`, the virtual machine; and
-//! `src/prelude.cor`, the standard library). This crate is only the bootstrap
+//! The language itself is implemented in Corros (`src/compiler.cro`, the
+//! lexer + bytecode compiler; `src/vm.cro`, the virtual machine; and
+//! `src/prelude.cro`, the standard library). This crate is only the bootstrap
 //! seed — the small interpreter in [`seed`] that can boot the Corros-written
 //! interpreter, in the same way rustc's first compiler was written in OCaml.
 //! [`lexer`] provides the tokenizer (and the seed's only error type) the seed

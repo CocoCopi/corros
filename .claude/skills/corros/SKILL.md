@@ -1,6 +1,6 @@
 ---
 name: corros
-description: Write, compile, run, and debug programs in Corros — a from-scratch scripting language with its own lexer, bytecode compiler, and virtual machine. Use this skill whenever the user asks to write, fix, extend, or run Corros code (.cor files), or to work on the Corros interpreter itself (Rust in src/).
+description: Write, compile, run, and debug programs in Corros — a from-scratch scripting language with its own lexer, bytecode compiler, and virtual machine. Use this skill whenever the user asks to write, fix, extend, or run Corros code (.cro files), or to work on the Corros interpreter itself (Rust in src/).
 ---
 
 # Corros — language reference
@@ -11,7 +11,7 @@ bytecode compiler, and its own virtual machine, written in Rust. It has a unique
 and a self-hosting milestone (a compiler and VM for Corros written in Corros under
 `selfhost/`).
 
-- File extension: `.cor`
+- File extension: `.cro` (legacy `.cor` files still run, but always write new files as `.cro` — `.cor` collides with another language and is retired)
 - Comments: `// line` and `/* block */`
 - Semicolons optional (newlines separate statements, but `;` is allowed)
 
@@ -26,13 +26,13 @@ cd /path/to/corros
 cargo build --release                      # plain build works
 cargo build --release && cp target/release/corros /usr/local/bin/corros   # make it a command
 
-corros hello.cor                    # run a file
-corros hello.cor one two            # pass args (visible as the `args` list)
+corros hello.cro                    # run a file
+corros hello.cro one two            # pass args (visible as the `args` list)
 corros                             # interactive REPL (echoes non-nil results)
-corros --dump hello.cor            # print compiled bytecode
+corros --dump hello.cro            # print compiled bytecode
 corros --run-bc file.bc            # run compiled bytecode natively (self-hosting)
-corros --compile fib.cor           # AOT-compile to a native binary (needs `cc`)
-corros --reference hello.cor       # run through the Corros-written VM
+corros --compile fib.cro           # AOT-compile to a native binary (needs `cc`)
+corros --reference hello.cro       # run through the Corros-written VM
 corros -v                          # version
 ```
 
@@ -44,10 +44,10 @@ round-robin (so background load hits everyone equally). Compiled Corros ties
 or beats hand-written C and beats Rust, Go, and Python on all three — because
 `--compile` emits C and builds with `cc -O3`, C is the ceiling.
 
-Note: the installed `corros` needs the `.cor` sources (`prelude.cor`,
-`compiler.cor`, `vm.cor`, `cli.cor`, `codegen.cor`) next to the binary — the
+Note: the installed `corros` needs the `.cro` sources (`prelude.cro`,
+`compiler.cro`, `vm.cro`, `cli.cro`, `codegen.cro`) next to the binary — the
 installer places them all in the same directory. Without them, startup fails
-with "cannot find src/cli.cor".
+with "cannot find src/cli.cro".
 
 Exit codes: 65 = compile error, 70 = runtime error. The REPL wraps input in
 `speak((...))`, so expressions echo their value (assignment included).
@@ -97,7 +97,7 @@ each i in 0..=10 { ... }    // inclusive range; `0..10` excludes 10
 break                       // exit the innermost whilst/each
 onward                      // skip to the next iteration
 return expr                  // from a craft; bare `return` returns nil
-adopt "lib.cor"             // include another file's top-level code (modules)
+adopt "lib.cro"             // include another file's top-level code (modules)
 vouch(cond, "message")      // assert; aborts with message on failure
 flaw("message")             // raise a runtime error immediately
 ```
@@ -188,8 +188,8 @@ be freed by the shim's own free wrapper (e.g. `ll_free`), not `cstr_free`.
   from the entry point.
 - Top-level `return` is illegal — dispatch from a `craft main()`.
 - `lib_call` args must be numbers; build argument lists as `[a, b, ...]`.
-- The `corros` binary resolves its own `src/cli.cor` from the CWD first — a
-  project with its own `src/cli.cor` must be launched from a neutral directory
+- The `corros` binary resolves its own `src/cli.cro` from the CWD first — a
+  project with its own `src/cli.cro` must be launched from a neutral directory
   with an absolute path (see the `corllama` launcher).
 
 ## Methods (receiver.method(...))
@@ -209,7 +209,7 @@ return · `holds(key)` · `clear()`
 ## Script arguments & modules
 
 - `args` is a global list of the script's command-line arguments (empty when none).
-- `adopt "path.cor"` splices the file's top-level code into the current one, in the
+- `adopt "path.cro"` splices the file's top-level code into the current one, in the
   same global scope. Used to build libraries. Paths resolve relative to the
   current working directory.
 
@@ -223,26 +223,26 @@ compiles when the input is complete). Every statement is wrapped as
 
 **The interpreter is written in Corros; Rust is only the bootstrap.**
 
-Corros side (`src/*.cor`):
+Corros side (`src/*.cro`):
 
-- `compiler.cor` — **the Corros compiler**: lexer + single-pass bytecode
+- `compiler.cro` — **the Corros compiler**: lexer + single-pass bytecode
   compiler (no AST). Its own implementation stays in a deliberate subset — no
   closures/maps/methods in ITS source — so self-compilation only exercises
   constructs that were already proven correct.
-- `vm.cor` — **the reference VM**, written in Corros, using the full
-  language. Run any program through it with `corros --reference file.cor`.
+- `vm.cro` — **the reference VM**, written in Corros, using the full
+  language. Run any program through it with `corros --reference file.cro`.
   It is authoritative; it is also reasonably fast, because the compiled VM
   runs on the native executor (cached like the compiler) and its globals are
   an O(1) map — only the meta-circular dispatch tax (~3µs/op) remains, ~5×
   faster than the old tree-walking path and ~80× better than the original
   250µs/op interpreter.
-- `prelude.cor` — **the Corros standard library**, spliced in front of every
+- `prelude.cro` — **the Corros standard library**, spliced in front of every
   program; method calls route through its `$method(recv, name, [args])`
   dispatcher, so list/string methods (`shove`, `yank`, `size`, `holds`,
   `flip`, `clear`, `weld`, `split`, `opens`, `closes`, `reforge`) are
   implemented in Corros. The native side falls back to its method table only
   for host primitives (`mcall(name, recv, args)`).
-- `codegen.cor` — **the AOT backend for `--compile`**: parses the textual
+- `codegen.cro` — **the AOT backend for `--compile`**: parses the textual
   bytecode, runs a whole-program type analysis over stack slots, emits C, and
   pipes it through `cc -O3`. It ends with two peephole passes that make the
   generated C as fast as hand-written C: (1) `peephole` inlines every
@@ -257,17 +257,17 @@ Corros side (`src/*.cor`):
 Rust side (`src/*.rs`):
 
 - `seed.rs` — the bootstrap seed: a tree-walking interpreter that runs
-  `compiler.cor`. Values, builtins, operators, and the native method table
+  `compiler.cro`. Values, builtins, operators, and the native method table
   live here (`Value`, `binary_op`, `index_get`, `native_builtin`,
   `lookup_method`). The CLI bridge builtins live here too: `run(path, args)`,
   `run_bc`, `run_ref`, `dump`, `run_src_try(src)` (never fails — returns
   `[true, line...]` or `[false, error]`), and `version()`.
 - `native.rs` — the native executor: parses the textual bytecode
-  `compiler.cor` emits (`FUNCTION`/`ENDFN` blocks, one instruction per line)
+  `compiler.cro` emits (`FUNCTION`/`ENDFN` blocks, one instruction per line)
   and runs it at native speed — `fib(30)` in ~1s. This is the default
   execution path; the compiled compiler itself is cached (in the OS temp
-  dir, keyed on `compiler.cor` + `prelude.cor`) so startup skips the seed.
-- `codegen.cor` — **the AOT compiler backend, written in Corros**: a
+  dir, keyed on `compiler.cro` + `prelude.cro`) so startup skips the seed.
+- `codegen.cro` — **the AOT compiler backend, written in Corros**: a
   whole-program type analysis over the bytecode (numbers, strings, booleans,
   ranges, functions, builtins) plus a stack-accurate C emitter, built with
   `cc -O3`. Like the compiler and the VM, the compiler-backend is Corros —
@@ -276,25 +276,25 @@ Rust side (`src/*.rs`):
   messages. `fib(30)` compiles to a binary that runs in ~0.025s — faster
   than Go and Rust-f64, at hand-written-C parity.
 - `lexer.rs` — the seed's tokenizer (reads the Corros sources).
-- `cli.cor` — **the CLI, written in Corros**: flags, `--dump`, `--run-bc`,
+- `cli.cro` — **the CLI, written in Corros**: flags, `--dump`, `--run-bc`,
   `--reference`, and the REPL (which uses `run_src_try` so an error in one
   line doesn't kill the session). Keep it method-free-ish (it uses
   `line.shave()`, which the spliced prelude provides).
-- `main.rs` — a thin launcher: compiles `cli.cor` with the cached compiled
+- `main.rs` — a thin launcher: compiles `cli.cro` with the cached compiled
   compiler and runs it on the native executor with the user's arguments.
 - `tests/language.rs` — integration tests: `run("...")` executes source and
   returns captured output lines.
 
-**Self-hosting** (`demo.sh`): the seed boots `compiler.cor`, which compiles
-itself and `vm.cor`; the compiled VM then runs the compiled compiler, and the
+**Self-hosting** (`demo.sh`): the seed boots `compiler.cro`, which compiles
+itself and `vm.cro`; the compiled VM then runs the compiled compiler, and the
 output is byte-identical to the source compiler's — Corros compiles Corros,
 and Corros runs Corros.
 
-**AOT compilation** (`corros --compile`): the pipeline is `compiler.cor`
-(bytecode) → `codegen.cor` (types + C) → `cc -O3` (native binary). It compiles
+**AOT compilation** (`corros --compile`): the pipeline is `compiler.cro`
+(bytecode) → `codegen.cro` (types + C) → `cc -O3` (native binary). It compiles
 *without* the prelude so the static analysis stays tractable; programs that
 need methods/lists/maps run interpreted instead. The default output name is
-the source minus `.cor` (`fib.cor` → `./fib`), or pass an explicit path.
+the source minus `.cro` (`fib.cro` → `./fib`), or pass an explicit path.
 
 ## Gotchas (important — these bite)
 
@@ -319,17 +319,17 @@ the source minus `.cor` (`fib.cor` → `./fib`), or pass an explicit path.
 ## Example programs
 
 ```corros
-// hello.cor
+// hello.cro
 speak("Hello, world!")
 
-// fib.cor — recursion + closures
+// fib.cro — recursion + closures
 craft fib(n) {
   when n <= 1 { return n }
   return fib(n - 1) + fib(n - 2)
 }
 speak(fib(10))          // 55
 
-// fizzbuzz.cor — each + ranges + when
+// fizzbuzz.cro — each + ranges + when
 each i in 1..=15 {
   when i % 15 == 0 { speak("fizzbuzz") }
   else when i % 3 == 0 { speak("fizz") }
@@ -337,7 +337,7 @@ each i in 1..=15 {
   else { speak(i) }
 }
 
-// closures.cor — the foundry theme
+// closures.cro — the foundry theme
 craft make_counter() {
   forge count = 0
   return craft() { count = count + 1; return count }
@@ -345,7 +345,7 @@ craft make_counter() {
 forge next = make_counter()
 speak(next(), next(), next())   // 1 2 3
 
-// collections.cor
+// collections.cro
 forge metals = ["iron", "copper", "gold"]
 metals.shove("steel")
 metals.order()

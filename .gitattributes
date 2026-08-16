@@ -2,8 +2,8 @@
 # bootstrap seed that boots the Corros-written compiler (the same way rustc's
 # first compiler was written in OCaml, and CPython's core is C). Mark it
 # generated so GitHub's language bar reflects the actual language — Corros.
-# Requires the "Corros" entry in github-linguist/linguist (PR #8130) so .cor
-# files are detected; until that merges, .cor files are invisible to the bar.
+# Requires the "Corros" entry in github-linguist/linguist (PR #8130) so .cro
+# files are detected; until that merges, .cro files are invisible to the bar.
 *.rs   linguist-generated=true
 Cargo.toml   linguist-generated=true
 Cargo.lock   linguist-generated=true

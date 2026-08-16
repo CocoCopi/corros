@@ -1,8 +1,8 @@
 //! main.rs — a thin launcher.
 //!
 //! The entire command-line interface — flags, `--dump`, `--run-bc`,
-//! `--reference`, and the REPL — lives in `src/cli.cor`, written in Corros.
-//! This file only boots it: compile `cli.cor` with the cached compiled
+//! `--reference`, and the REPL — lives in `src/cli.cro`, written in Corros.
+//! This file only boots it: compile `cli.cro` with the cached compiled
 //! compiler and run it on the native executor with the user's arguments.
 
 fn main() {

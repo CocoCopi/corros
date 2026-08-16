@@ -9,7 +9,7 @@
 #   ./run.sh [iterations] --md prints a markdown table instead
 #
 # The `corros --compile` column is the fast lane (ahead-of-time compilation to
-# native code through cc -O3). The interpreted column is `corros file.cor`.
+# native code through cc -O3). The interpreted column is `corros file.cro`.
 #
 # Timing is round-robin (one run of every language per round) so that any
 # background-load drift on the machine hits all languages equally.
@@ -55,7 +55,7 @@ LANGS=(corros c rust go python)
 build() { # bench lang -> 0 on success
     local bench="$1" lang="$2" out="out_${bench}_${lang}"
     case "$lang" in
-        corros) "$CORROS" --compile "$BENCH_DIR/$bench.cor" "$WORK/$out" >/dev/null 2>&1 ;;
+        corros) "$CORROS" --compile "$BENCH_DIR/$bench.cro" "$WORK/$out" >/dev/null 2>&1 ;;
         c)      "$CC" -O3 -o "$WORK/$out" "$BENCH_DIR/$bench.c" -lm >/dev/null 2>&1 ;;
         rust)   "$RUSTC" -O -o "$WORK/$out" "$BENCH_DIR/$bench.rs" >/dev/null 2>&1 ;;
         go)     "$GO" build -o "$WORK/$out" "$BENCH_DIR/$bench.go" >/dev/null 2>&1 ;;
@@ -123,7 +123,7 @@ echo
 
 # --- time round-robin ---------------------------------------------------------
 # interp needs its own command (no binary)
-interp_cmd() { echo "$CORROS $BENCH_DIR/$1.cor"; }
+interp_cmd() { echo "$CORROS $BENCH_DIR/$1.cro"; }
 
 declare -A BEST
 for b in "${!BENCHES[@]}"; do

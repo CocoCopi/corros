@@ -5,7 +5,7 @@
 Corros is a bytecode-compiled scripting language with its own lexer, its own
 compiler, its own virtual machine, and a syntax that belongs to **no other
 language**. Rust is written in Rust. Corros is written in Rust — and it already
-compiles **itself**: `src/compiler.cor`, `src/vm.cor`, and `src/prelude.cor`
+compiles **itself**: `src/compiler.cro`, `src/vm.cro`, and `src/prelude.cro`
 are a Corros compiler, a Corros virtual machine, and a Corros standard
 library — all written in Corros, proven by a byte-identical bootstrap chain
 (`bash demo.sh`).
@@ -29,9 +29,32 @@ seed: **sockets** (`net_listen`, `net_accept`, `net_read`, `net_write`), an
 **HTTP client** (`http_get`, `http_download`), **files and processes**
 (`file_write`, `file_append`, `sys_exec`, `getenv`), and a **dynamic FFI**
 (`load_lib`, `lib_call`, `lib_close` + `mem_*`/`cstr_*` helpers) so Corros
-programs can dlopen any C library. It was enough to write **corllama** — a
+programs can dlopen any C library. It was enough to write **crucible** — a
 local LLM server with a streaming REST API — entirely in Corros
-([github.com/CocoCopi/corllama](https://github.com/CocoCopi/corllama)).
+([github.com/CocoCopi/crucible](https://github.com/CocoCopi/crucible)).
+
+## The `.cro` extension and GitHub's language bar
+
+Corros source files use **`.cro`** (`corros hello.cro`). The original `.cor`
+extension was retired: it already belonged to another language (Corvid) and
+~14,600 unrelated files, so GitHub could never count Corros files correctly.
+Legacy `.cor` files still run — the runner accepts both.
+
+GitHub's language bar is powered by **linguist**, which has no entry for
+Corros, so `.cro` files are currently invisible to it. Adding a language to
+linguist requires proof of widespread real-world usage — at least 2000
+`.cro` files indexed in the last year (excluding forks) spread across unique
+repos. Our PR ([github-linguist/linguist#8130](https://github.com/github-linguist/linguist/pull/8130))
+was closed until that bar is met — that is an adoption gate, not a code
+problem. Track it:
+
+```bash
+GITHUB_TOKEN=<pat> tools/usage_proof.sh    # writes USAGE.md with the live counts
+```
+
+The full resubmission kit (requirements, filled PR template, remaining work
+like a syntax-highlighting grammar and real-world samples) lives in
+[`docs/linguist-resubmission.md`](docs/linguist-resubmission.md).
 
 ## Benchmarks
 
@@ -39,7 +62,7 @@ local LLM server with a streaming REST API — entirely in Corros
 bytecode, emits C, and builds a native binary with `cc -O3` — so compiled
 Corros sits **at the C ceiling**: it ties or beats hand-written C, and beats
 **Rust, Go, and Python on every workload measured here**. The interpreter
-(`corros file.cor`) stays the fast-to-start scripting default.
+(`corros file.cro`) stays the fast-to-start scripting default.
 
 Measured on an ARM64 Linux box with `bench/run.sh` (round-robin, best of 7):
 
@@ -117,7 +140,7 @@ keep going **onward**.
   name every `craft`.
 - **REPL**, bytecode disassembly (`--dump`), and `adopt` modules with cycle
   detection.
-- **Ahead-of-time compilation** — `corros --compile file.cor` runs a
+- **Ahead-of-time compilation** — `corros --compile file.cro` runs a
   whole-program type analysis over the bytecode, emits C, and builds a native
   binary with `cc -O3`. Compiled code ties or beats hand-written C, and runs
   **faster than Rust, Go, and Python** (see the benchmarks above).
@@ -131,8 +154,8 @@ curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | s
 
 That's it. It downloads a prebuilt binary for your platform (Linux, macOS,
 Windows — x86_64 and ARM64), or builds from source if no prebuilt exists, and
-installs `corros` alongside the Corros-written interpreter (`compiler.cor`,
-`vm.cor`, `cli.cor`, `prelude.cor`), which the binary loads from beside itself.
+installs `corros` alongside the Corros-written interpreter (`compiler.cro`,
+`vm.cro`, `cli.cro`, `prelude.cro`), which the binary loads from beside itself.
 
 **Build from source — one line** (requires Rust 1.70+):
 
@@ -145,11 +168,11 @@ Or build and run in place:
 ```bash
 cargo build --release
 ./target/release/corros            # start the REPL
-./target/release/corros file.cor   # run a script
-./target/release/corros --dump file.cor  # print compiled bytecode
+./target/release/corros file.cro   # run a script
+./target/release/corros --dump file.cro  # print compiled bytecode
 ./target/release/corros --run-bc file.bc # run compiled bytecode (native executor)
-./target/release/corros --reference file.cor # run through the Corros-written VM (src/vm.cor)
-./target/release/corros --compile file.cor   # AOT-compile to a native binary
+./target/release/corros --reference file.cro # run through the Corros-written VM (src/vm.cro)
+./target/release/corros --compile file.cro   # AOT-compile to a native binary
 ```
 
 `--compile` needs a C compiler (`cc`) and works best on statically-typed
@@ -157,7 +180,7 @@ numeric programs: plain functions, numbers, booleans, strings, ranges,
 `when`/`whilst`/`each`, and the builtins. Dynamic features (lists, maps,
 methods, closures with upvalues) are rejected with a clear message — run those
 with the interpreter instead. The output binary is placed next to the source
-(`fib.cor` → `fib`) or at the path you give as the second argument.
+(`fib.cro` → `fib`) or at the path you give as the second argument.
 
 ## A taste of Corros
 
@@ -199,10 +222,10 @@ was written in OCaml, Corros's first compiler is written in Rust — but only as
 a small seed (`src/seed.rs`, a tree-walking interpreter that can boot the
 Corros-written compiler) and a native executor (`src/native.rs`) that runs the
 compiler's bytecode at native speed. Your program is compiled by
-`src/compiler.cor` (written in Corros) and executed by the native executor;
-`src/vm.cor` is the reference interpreter, written in Corros, available via
+`src/compiler.cro` (written in Corros) and executed by the native executor;
+`src/vm.cro` is the reference interpreter, written in Corros, available via
 `--reference` and proven by `demo.sh`. Even the **command-line interface is
-written in Corros** (`src/cli.cor`) — `main.rs` is a ~20-line launcher that
+written in Corros** (`src/cli.cro`) — `main.rs` is a ~20-line launcher that
 just boots it. The result: a language written in itself, with programs running
 at native-interpreter speed.
 
@@ -219,9 +242,9 @@ bash demo.sh
 
 The bootstrap chain, proven end to end:
 
-1. The seed boots `src/compiler.cor` — **a Corros compiler written in
+1. The seed boots `src/compiler.cro` — **a Corros compiler written in
    Corros** — which compiles a full-language program.
-2. The same compiler compiles `src/vm.cor` — **a Corros virtual machine
+2. The same compiler compiles `src/vm.cro` — **a Corros virtual machine
    written in Corros** — from source.
 3. The **compiled VM runs the compiled compiler**, which compiles a program
    with closures, upvalues, methods, and maps.
@@ -235,7 +258,7 @@ The deep chain is fast because compiled programs run on the native executor
 
 ### The standard library is Corros too
 
-`src/prelude.cor` is the standard library, **written in Corros**. It is
+`src/prelude.cro` is the standard library, **written in Corros**. It is
 spliced in front of every program, and method calls (`xs.shove(1)`,
 `s.split(",")`) route through its `$method` dispatcher — so `shove`, `yank`,
 `size`, `holds`, `flip`, `clear`, `weld`, `split`, `opens`, `closes`, and
@@ -246,20 +269,20 @@ internals). What's left of Rust is the bootstrap seed and the native executor
 
 | file | job |
 | ---- | --- |
-| `src/compiler.cor` | **the Corros compiler** — lexer + single-pass bytecode compiler, written in Corros |
-| `src/vm.cor`       | **the Corros VM** — the reference interpreter, written in Corros (`--reference`) |
-| `src/prelude.cor`  | **the Corros standard library** — list/string methods, `$method` dispatch |
-| `src/cli.cor`      | **the Corros CLI** — flags, `--dump`, `--run-bc`, `--reference`, `--compile`, the REPL |
-| `src/codegen.cor`  | **the AOT compiler backend, written in Corros** — whole-program type analysis, C emission, and a peephole pass (temp inlining + branch inversion) that makes compiled output as fast as hand-written C |
-| `src/seed.rs`      | the bootstrap seed: a tree-walking interpreter that boots `compiler.cor` |
+| `src/compiler.cro` | **the Corros compiler** — lexer + single-pass bytecode compiler, written in Corros |
+| `src/vm.cro`       | **the Corros VM** — the reference interpreter, written in Corros (`--reference`) |
+| `src/prelude.cro`  | **the Corros standard library** — list/string methods, `$method` dispatch |
+| `src/cli.cro`      | **the Corros CLI** — flags, `--dump`, `--run-bc`, `--reference`, `--compile`, the REPL |
+| `src/codegen.cro`  | **the AOT compiler backend, written in Corros** — whole-program type analysis, C emission, and a peephole pass (temp inlining + branch inversion) that makes compiled output as fast as hand-written C |
+| `src/seed.rs`      | the bootstrap seed: a tree-walking interpreter that boots `compiler.cro` |
 | `src/native.rs`    | the native executor: runs the compiler's bytecode at native speed |
 | `src/lexer.rs`     | the seed's tokenizer (reads the Corros sources) |
 | `src/error.rs`     | compile-error formatting |
-| `src/main.rs`      | a thin launcher that boots `cli.cor` |
+| `src/main.rs`      | a thin launcher that boots `cli.cro` |
 
 **Why is there any Rust at all?** A language's *first* compiler must be written
 in some other language — rustc's was OCaml, CPython's is C. The seed is that
-first compiler: the minimal piece of native code that can run `compiler.cor`
+first compiler: the minimal piece of native code that can run `compiler.cro`
 the first time. It cannot itself be written in Corros (nothing exists to run
 it yet), and the native executor is the accelerator that makes bytecode run
 fast. Everything a user can see and write — the compiler, the VM, the standard
@@ -290,7 +313,7 @@ library, and the CLI — is Corros.
   `shave`, `split`, `holds`, `opens`, `closes`, `reforge`; maps — `size`,
   `labels`, `contents`, `holds`, `fetch`, `pluck`, `clear`; ranges — `size`,
   `holds`.
-- **Modules**: `adopt "path.cor"` splices another file in (relative paths,
+- **Modules**: `adopt "path.cro"` splices another file in (relative paths,
   cycle detection).
 
 ## Roadmap
@@ -298,9 +321,9 @@ library, and the CLI — is Corros.
 - [x] Lexer, compiler, bytecode VM, REPL
 - [x] Closures, collections, ranges, modules, error reporting
 - [x] **The full interpreter rewritten in Corros and bootstrapped from source** —
-      `src/compiler.cor` + `src/vm.cor` compile and run the entire language,
+      `src/compiler.cro` + `src/vm.cro` compile and run the entire language,
       byte-identical through the whole chain (`bash demo.sh`)
-- [x] **A standard library written in Corros itself** — `src/prelude.cor`
+- [x] **A standard library written in Corros itself** — `src/prelude.cro`
       implements the list and string methods in Corros, with native fallbacks
       only where host primitives are required
 - [x] **Native execution speed** — the native executor (`src/native.rs`) runs

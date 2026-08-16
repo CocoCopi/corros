@@ -13,7 +13,7 @@ Report vulnerabilities privately to the maintainer:
 Please include:
 
 1. The Corros version (`corros -v`) and how it was built
-2. A minimal `.cor` program that triggers the issue
+2. A minimal `.cro` program that triggers the issue
 3. The expected vs. actual behavior
 4. Whether the issue affects the interpreter (`src/`), the self-hosting code
    (`selfhost/`), or the CLI

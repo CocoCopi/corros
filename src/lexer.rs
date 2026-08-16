@@ -4,7 +4,7 @@
 //! comments (`//` and `/* */`), identifiers, keywords, and all operators.
 //!
 //! This module also owns the [`CompileError`] type (the seed's only error
-//! type): error *rendering* lives in the Corros-written CLI (`src/cli.cor`),
+//! type): error *rendering* lives in the Corros-written CLI (`src/cli.cro`),
 //! so the seed only needs the raw fields.
 
 /// An error produced while lexing, parsing, or compiling Corros source.
@@ -507,7 +507,7 @@ mod tests {
     use super::*;
 
     fn kinds(source: &str) -> Vec<TokenKind> {
-        lex(source, "test.cor")
+        lex(source, "test.cro")
             .unwrap()
             .into_iter()
             .map(|t| t.kind)
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn unexpected_character() {
-        let err = lex("let @ = 1", "test.cor").unwrap_err();
+        let err = lex("let @ = 1", "test.cro").unwrap_err();
         assert!(err.message.contains("unexpected character"));
         assert_eq!(err.line, 1);
     }
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn unterminated_string() {
-        let err = lex("\"oops", "test.cor").unwrap_err();
+        let err = lex("\"oops", "test.cro").unwrap_err();
         assert!(err.message.contains("unterminated string"));
     }
 }

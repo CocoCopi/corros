@@ -1,12 +1,12 @@
 //! native.rs — the native bytecode executor.
 //!
-//! The interpreter is written in Corros (`src/compiler.cor`, `src/vm.cor`,
-//! `src/prelude.cor`), and the seed in `seed.rs` boots it. But running user
+//! The interpreter is written in Corros (`src/compiler.cro`, `src/vm.cro`,
+//! `src/prelude.cro`), and the seed in `seed.rs` boots it. But running user
 //! bytecode through the Corros VM *under* the tree-walking seed costs tens of
 //! microseconds per instruction — the Corros VM's dispatch is itself
 //! interpreted. This module is the bootstrap accelerator: it executes the
-//! exact same textual bytecode that `compiler.cor` emits, natively, with the
-//! same semantics as `vm.cor` (globals, frames, upvalue cells, maps, ranges,
+//! exact same textual bytecode that `compiler.cro` emits, natively, with the
+//! same semantics as `vm.cro` (globals, frames, upvalue cells, maps, ranges,
 //! methods routed through the Corros-written `$method` stdlib). What it adds
 //! over the reference VM is speed: O(1) HashMap globals instead of a scanned
 //! list, a flat `Vec` stack, and a tight opcode loop.
@@ -15,7 +15,7 @@
 //! into per-program name/constant/closure pools, so the dispatch loop is a
 //! `Copy` fetch with zero allocation per instruction.
 //!
-//! The Corros VM (`src/vm.cor`) remains the reference implementation and is
+//! The Corros VM (`src/vm.cro`) remains the reference implementation and is
 //! still exercised by `demo.sh` and the `--reference` flag.
 
 use std::cell::RefCell;
@@ -96,8 +96,8 @@ pub(crate) struct Program {
 // Bytecode loading
 // ---------------------------------------------------------------------------
 
-/// Reverse of `compiler.cor`'s `escape_str`: turn `"a\nb"` back into a real
-/// string. Mirrors `vm.cor`'s `unescape` exactly.
+/// Reverse of `compiler.cro`'s `escape_str`: turn `"a\nb"` back into a real
+/// string. Mirrors `vm.cro`'s `unescape` exactly.
 fn unescape(s: &str) -> String {
     let inner = &s[1..s.len().saturating_sub(1)];
     let mut out = String::with_capacity(inner.len());
@@ -238,8 +238,8 @@ fn parse_instr(line: &str, pools: &mut Pools) -> Result<Op, String> {
     }
 }
 
-/// Parse the textual bytecode that `compiler.cor` prints into a [`Program`].
-/// Mirrors `vm.cor`'s `parse_bc`: `FUNCTION <id> <name> <arity>` blocks ended
+/// Parse the textual bytecode that `compiler.cro` prints into a [`Program`].
+/// Mirrors `vm.cro`'s `parse_bc`: `FUNCTION <id> <name> <arity>` blocks ended
 /// by `ENDFN`, `MAIN` headers skipped.
 pub(crate) fn load_program(text: &str) -> Result<Program, String> {
     let mut prog = Program {
@@ -313,7 +313,7 @@ struct Frame {
     slots_base: usize,
     /// Stack index the callee was pushed at; Return truncates back to here.
     trunc_base: usize,
-    /// Per-slot capture cells (each a one-element list, like vm.cor).
+    /// Per-slot capture cells (each a one-element list, like vm.cro).
     cells: Vec<Option<Value>>,
     /// Upvalue cells captured from the enclosing frame.
     upvals: Vec<Value>,
@@ -337,7 +337,7 @@ impl NativeVm {
             "size", "nature", "str", "num", "int", "bool", "abs", "root", "least", "greatest",
             "tick", "span", "speak", "eprint", "hear", "read", "readlines", "file_exists", "flaw", "shove",
             "yank", "vouch", "mcall",
-            // The CLI bridge (src/cli.cor).
+            // The CLI bridge (src/cli.cro).
             "version", "run", "run_bc", "run_ref", "dump", "run_src_try",
             "native_compile",
             // Host services (the Corros-written Ollama server).
@@ -366,7 +366,7 @@ impl NativeVm {
     }
 
     /// Capture local slot `idx` of the current frame into a shared cell.
-    /// Mirrors `vm.cor`'s `capture_cell`.
+    /// Mirrors `vm.cro`'s `capture_cell`.
     fn capture_cell(&mut self, idx: usize) -> Value {
         let fr = self.frames.last_mut().unwrap();
         while fr.cells.len() <= idx {
@@ -692,7 +692,7 @@ impl NativeVm {
     }
 }
 
-/// Run a compiled program (the textual bytecode `compiler.cor` emits) at
+/// Run a compiled program (the textual bytecode `compiler.cro` emits) at
 /// native speed. Returns the lines printed by `speak`.
 pub fn run_bytecode(text: &str, args: &[String], echo: bool) -> Result<Vec<String>, String> {
     let prog = load_program(text)?;
