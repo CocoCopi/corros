@@ -335,6 +335,7 @@ impl NativeVm {
     fn install_builtins(&mut self) {
         let names = [
             "size", "nature", "str", "num", "int", "bool", "abs", "root", "least", "greatest",
+            "f32_bits", "f32_from_bits",
             "tick", "span", "speak", "eprint", "hear", "read", "readlines", "file_exists", "flaw", "shove",
             "yank", "vouch", "mcall",
             // The CLI bridge (src/cli.cro).

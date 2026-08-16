@@ -787,6 +787,7 @@ impl Interpreter {
     fn install_builtins(&mut self) {
         let names = [
             "speak", "eprint", "hear", "size", "nature", "str", "num", "int", "bool", "abs",
+            "f32_bits", "f32_from_bits",
             "root", "least", "greatest", "tick", "span", "vouch", "flaw", "read",
             "readlines", "shove", "yank", "file_exists", "mcall",
             // Host services (the Corros-written Ollama server).
@@ -1596,6 +1597,19 @@ pub(crate) fn native_builtin(
                 expect_args("abs", args, 1)?;
                 Ok(Value::Num(want_num("abs", &args[0])?.abs()))
             }
+            "f32_bits" => {
+                // f32_bits(x) -> the u32 bit pattern of (x as f32), as a number.
+                // Lets Corros pass float arguments through the i64 FFI exactly
+                // (the C side reinterprets the bits).
+                expect_args("f32_bits", args, 1)?;
+                Ok(Value::Num((want_num("f32_bits", &args[0])? as f32).to_bits() as f64))
+            }
+            "f32_from_bits" => {
+                // f32_from_bits(n) -> the f32 whose bits are n (as a number).
+                // Inverse of f32_bits: recovers a float returned by the FFI.
+                expect_args("f32_from_bits", args, 1)?;
+                Ok(Value::Num(f32::from_bits(want_num("f32_from_bits", &args[0])? as u32) as f64))
+            }
             "root" => {
                 expect_args("root", args, 1)?;
                 Ok(Value::Num(want_num("root", &args[0])?.sqrt()))
@@ -2033,7 +2047,10 @@ pub(crate) fn native_builtin(
                     let mut a = [0i64; 8];
                     for (i, v) in arg_list.iter().enumerate().take(8) {
                         match v {
-                            Value::Num(n) => a[i] = (*n as u64) as i64,
+                            // f64->u64 saturates, mangling negative args
+                            // (e.g. -1 became 0) — cast via i64 so negative
+                            // integers round-trip exactly.
+                            Value::Num(n) => a[i] = *n as i64,
                             Value::Bool(b) => a[i] = if *b { 1 } else { 0 },
                             _ => {
                                 return Err(
