@@ -366,8 +366,8 @@ Contributions are accepted under the [Contributor License Agreement](CLA.md),
 which keeps the dual-license model legally sound.
 
 
-## **Created by Coco Copi Developers**
-<img src="https://github.com/CocoCopi/corros/blob/ae030c4bf3c4d781146f63185476b15b9d1fd094/img/PNG.png" alt="Sample" style="width:60%; height:auto;"> by
-<img src="https://github.com/CocoCopi/corros/blob/ae030c4bf3c4d781146f63185476b15b9d1fd094/img/Branding__1_-removebg-preview.png" alt="Sample" style="width:15%; height:auto;">
+
+
+Created by <img src="https://github.com/CocoCopi/corros/blob/ae030c4bf3c4d781146f63185476b15b9d1fd094/img/Branding__1_-removebg-preview.png" alt="Sample" style="width:10%; height:auto;">
 
 
