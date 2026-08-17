@@ -52,13 +52,14 @@ craft $str_split(s, sep) {
   forge acc = ""
   forge i = 0
   whilst i < size(s) {
-    when s[i] == sep {
+    when i + size(sep) <= size(s) && $slice(s, i, i + size(sep)) == sep {
       shove(out, acc)
       acc = ""
+      i = i + size(sep)
     } else {
       acc = acc + s[i]
+      i = i + 1
     }
-    i = i + 1
   }
   shove(out, acc)
   return out

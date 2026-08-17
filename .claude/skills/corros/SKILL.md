@@ -131,7 +131,7 @@ do `xs.shove` and pass it around; call them directly.
 | `eprint(...)` | print to **stderr** (never captured output — use it for diagnostics) |
 | `hear()` / `hear(prompt)` | read a line from stdin         |
 | `size(x)`   | length of string/list/map                |
-| `nature(x)` | type name: `"num" "str" "bool" "nil" "list" "map" "craft" "range"` |
+| `nature(x)` | type name: `"num" "bool" "nil" "list" "map" "range"`; strings report `"string"` (not `"str"`), and `craft` values report `"list"` |
 | `str(x)`    | string form                              |
 | `num(x)`    | parse string → num (errors on garbage)   |
 | `int(x)`    | truncate toward zero                     |
