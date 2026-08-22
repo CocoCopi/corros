@@ -150,14 +150,23 @@ keep going **onward**.
 
 ## Install — one line
 
+For Linux and macOS:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CocoCopi/corros/main/install.sh | sh
+```
+
+For Windows (using PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/CocoCopi/corros/main/install.ps1 | iex
 ```
 
 That's it. It downloads a prebuilt binary for your platform (Linux, macOS,
 Windows — x86_64 and ARM64), or builds from source if no prebuilt exists, and
 installs `corros` alongside the Corros-written interpreter (`compiler.cro`,
 `vm.cro`, `cli.cro`, `prelude.cro`), which the binary loads from beside itself.
+
+**Windows Installer (.exe):** 
+You can also compile a standalone Windows installer by building the project (`cargo build --release`) and compiling `windows_installer.iss` using [Inno Setup](https://jrsoftware.org/isinfo.php).
 
 **Build from source — one line** (requires Rust 1.70+):
 
