@@ -56,8 +56,29 @@ try {
     } else {
         Write-Host "Building from source (needs Rust)..."
         if (-not (Get-Command cargo -ErrorAction Ignore)) {
-            Write-Error "corros: 'cargo' not found. Install Rust first: https://rustup.rs/"
-            exit 1
+            $response = Read-Host "corros: 'cargo' not found. Would you like to automatically install Rust? (Y/n)"
+            if ($response -eq "" -or $response.ToLower().StartsWith("y")) {
+                Write-Host "Downloading Rust installer..."
+                $rustupExe = Join-Path $tmpDir "rustup-init.exe"
+                $rustupUrl = if ($arch -eq "aarch64") { "https://win.rustup.rs/aarch64" } else { "https://win.rustup.rs/x86_64" }
+                Invoke-WebRequest -Uri $rustupUrl -OutFile $rustupExe -UseBasicParsing -ErrorAction Stop
+                
+                Write-Host "Installing Rust (this may take a moment)..."
+                $rustupProc = Start-Process -FilePath $rustupExe -ArgumentList "-y -q" -Wait -PassThru -NoNewWindow
+                
+                if ($rustupProc.ExitCode -ne 0) {
+                    Write-Error "Failed to install Rust. Please install it manually from https://rustup.rs/"
+                    exit 1
+                }
+                
+                # Add cargo to current session PATH
+                $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+                $env:PATH = "$cargoBin;$env:PATH"
+                Write-Host "Rust installed successfully."
+            } else {
+                Write-Error "corros: 'cargo' not found. Install Rust first: https://rustup.rs/"
+                exit 1
+            }
         }
         $repo = Join-Path $tmpDir "corros"
         
