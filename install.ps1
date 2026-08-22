@@ -64,7 +64,13 @@ try {
                 Invoke-WebRequest -Uri $rustupUrl -OutFile $rustupExe -UseBasicParsing -ErrorAction Stop
                 
                 Write-Host "Installing Rust (this may take a moment)..."
-                $rustupProc = Start-Process -FilePath $rustupExe -ArgumentList "-y -q" -Wait -PassThru -NoNewWindow
+                # For Windows x86_64, default to the GNU toolchain so we don't need Visual Studio C++ Build Tools (MSVC)
+                $rustupArgs = "-y -q"
+                if ($arch -eq "x86_64") {
+                    $rustupArgs += " --default-host x86_64-pc-windows-gnu"
+                }
+                
+                $rustupProc = Start-Process -FilePath $rustupExe -ArgumentList $rustupArgs -Wait -PassThru -NoNewWindow
                 
                 if ($rustupProc.ExitCode -ne 0) {
                     Write-Error "Failed to install Rust. Please install it manually from https://rustup.rs/"
