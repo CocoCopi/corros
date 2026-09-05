@@ -1,8 +1,12 @@
-# Corros
+<div align="center">
+
+<img src="https://github.com/CocoCopi/corros/blob/b40e78d8aa1b8a704e2fe9e4f3da311ceb7cbefd/img/pngres.png" alt="Sample" style="width:60%; height:auto;">
+
+**Forged from scratch, named for what Rust does best: "Corrosion"**
+
+</div>
 
 **A programming language forged from scratch — and named for what Rust does best: corrosion.**
-
-![image alt](https://github.com/CocoCopi/corros/blob/4d3daf153415989c7260ccc1d4788c94e1970bc8/img/Banner.png)
 
 Corros is a bytecode-compiled scripting language with its own lexer, its own
 compiler, its own virtual machine, and a syntax that belongs to **no other
@@ -377,6 +381,6 @@ which keeps the dual-license model legally sound.
 
 
 
-Created by <img src="https://github.com/CocoCopi/corros/blob/ae030c4bf3c4d781146f63185476b15b9d1fd094/img/Branding__1_-removebg-preview.png" alt="Sample" style="width:10%; height:auto;">
+Created by <img src="https://github.com/CocoCopi/corros/blob/fb60c79addf7ae1970c7f6bb7e8e4d813c851842/img/ccdev.png" alt="Sample" style="width:30%; height:auto;">
 
 
